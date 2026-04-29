@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#020617" />
+
+    <!-- Primary meta tags -->
+    <title>RX Wheel — Visual Medication Schedule Planner</title>
+    <meta name="title" content="RX Wheel — Visual Medication Schedule Planner" />
+    <meta name="description" content="Plan when to take your medications on a 24-hour clock. See your dose times at a glance, evenly spaced across day and night. Free, no signup." />
+    <meta name="keywords" content="medication schedule, pill schedule, medication timing, dose planner, medication clock, every 8 hours medication, twice daily medication, pill reminder, dose calculator" />
+    <meta name="author" content="RX Wheel" />
+    <link rel="canonical" href="https://rxwheel.com/" />
+
+    <!-- Open Graph (Facebook, iMessage, Slack, etc.) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://rxwheel.com/" />
+    <meta property="og:title" content="RX Wheel — Visual Medication Schedule Planner" />
+    <meta property="og:description" content="Visualize your medication schedule on a 24-hour clock. Add multiple medications, evenly space your doses, and export to your calendar. Free, no signup, private." />
+    <meta property="og:image" content="https://rxwheel.com/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:site_name" content="RX Wheel" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://rxwheel.com/" />
+    <meta name="twitter:title" content="RX Wheel — Visual Medication Schedule Planner" />
+    <meta name="twitter:description" content="Plan medication doses on a 24-hour clock. Free, no signup." />
+    <meta name="twitter:image" content="https://rxwheel.com/og-image.png" />
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!-- PWA manifest (so it can be added to home screen) -->
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Structured data — helps Google understand what this is -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "RX Wheel",
+        "url": "https://rxwheel.com",
+        "description": "Visual medication schedule planner. Plan dose times on a 24-hour clock with day/night visualization. Add multiple medications and export to your calendar.",
+        "applicationCategory": "HealthApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires JavaScript",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "featureList": [
+          "Visual 24-hour medication schedule",
+          "Multiple medication tracking",
+          "Day and night visualization",
+          "Export to calendar (.ics)",
+          "Save and restore schedules",
+          "12 or 24 hour time format",
+          "Works on phone and desktop"
+        ]
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

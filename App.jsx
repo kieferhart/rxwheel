@@ -1,0 +1,852 @@
+import { useState, useRef, useEffect } from "react";
+
+const MED_COLORS = [
+  { name: "cyan", dot: "#22d3ee", ring: "#0e7490", chip: "cyan" },
+  { name: "rose", dot: "#fb7185", ring: "#9f1239", chip: "rose" },
+  { name: "lime", dot: "#a3e635", ring: "#3f6212", chip: "lime" },
+  { name: "violet", dot: "#c084fc", ring: "#6b21a8", chip: "violet" },
+  { name: "orange", dot: "#fb923c", ring: "#9a3412", chip: "orange" },
+];
+
+let nextId = 1;
+const newMed = (i = 0) => ({
+  id: nextId++,
+  count: 3,
+  offset: 8 + i * 1.5, // stagger initial offsets so dots don't overlap
+  color: MED_COLORS[i % MED_COLORS.length],
+  name: `Medication ${i + 1}`,
+});
+
+const DELETE_THRESHOLD = 105; // pixels swiped left before delete triggers
+
+
+function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, updateMed, removeMed, canDelete }) {
+  const [offsetX, setOffsetX] = useState(0);
+  const startX = useRef(null);
+  const dragging = useRef(false);
+  const offsetRef = useRef(0);
+
+  const setOffset = (v) => {
+    offsetRef.current = v;
+    setOffsetX(v);
+  };
+
+  const handlePointerDown = (e) => {
+    if (e.target.closest("button")) return;
+    const point = e.touches ? e.touches[0] : e;
+    startX.current = point.clientX;
+    dragging.current = true;
+  };
+
+  const handlePointerMove = (e) => {
+    if (!dragging.current || startX.current === null) return;
+    const point = e.touches ? e.touches[0] : e;
+    const dx = point.clientX - startX.current;
+    if (dx < 0) {
+      setOffset(Math.max(dx, -200));
+    } else {
+      setOffset(0);
+    }
+  };
+
+  const handlePointerUp = () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    if (offsetRef.current <= -DELETE_THRESHOLD) {
+      removeMed(med.id);
+    } else {
+      setOffset(0);
+    }
+    startX.current = null;
+  };
+
+  const willDelete = offsetX <= -DELETE_THRESHOLD;
+  const revealAmount = Math.min(-offsetX, 200);
+
+  return (
+    <div
+      className="relative rounded-2xl overflow-hidden"
+      style={{ width: "390px", maxWidth: "92vw" }}
+    >
+      {/* Trash icon revealed behind the pill (no background) */}
+      <div
+        className="absolute inset-0 flex items-center justify-end pr-5 pointer-events-none"
+        style={{
+          opacity: revealAmount > 0 ? 1 : 0,
+          color: willDelete ? "#f87171" : "#94a3b8",
+          transition: "color 150ms",
+        }}
+      >
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          <path d="M10 11v6M14 11v6" />
+          <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+        </svg>
+      </div>
+
+      {/* The pill itself, slides left over the red zone */}
+      <div
+        onMouseDown={handlePointerDown}
+        onMouseMove={handlePointerMove}
+        onMouseUp={handlePointerUp}
+        onMouseLeave={handlePointerUp}
+        onTouchStart={handlePointerDown}
+        onTouchMove={handlePointerMove}
+        onTouchEnd={handlePointerUp}
+        className="relative flex flex-col gap-1.5 rounded-2xl py-2 px-3"
+        style={{
+          backgroundColor: `${med.color.dot}22`,
+          border: `1px solid ${med.color.dot}33`,
+          width: "390px",
+          maxWidth: "92vw",
+          transform: `translateX(${offsetX}px)`,
+          transition: dragging.current ? "none" : "transform 200ms ease-out",
+          touchAction: "pan-y",
+        }}
+      >
+        {/* Name input */}
+        <input
+          type="text"
+          value={med.name}
+          onChange={(e) => updateMed(med.id, { name: e.target.value })}
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          placeholder="Medication name"
+          className="text-[13px] font-medium bg-transparent border-none outline-none w-full"
+          style={{
+            color: med.color.dot,
+          }}
+        />
+
+        {/* Row: controls + chips */}
+        <div className="flex items-start gap-2">
+          {/* Left side: count controls + frequency */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => updateMed(med.id, { count: Math.max(1, med.count - 1) })}
+              className="w-6 h-6 shrink-0 rounded-full bg-slate-700 active:bg-slate-500 flex items-center justify-center text-sm font-light"
+            >
+              −
+            </button>
+            <span className="text-[13px] font-medium shrink-0 tabular-nums">{med.count}×</span>
+            <button
+              onClick={() => updateMed(med.id, { count: Math.min(24, med.count + 1) })}
+              className="w-6 h-6 shrink-0 rounded-full bg-slate-700 active:bg-slate-500 flex items-center justify-center text-sm font-light"
+            >
+              +
+            </button>
+            <span className="text-[13px] text-slate-400 shrink-0 tabular-nums whitespace-nowrap">
+              {formatSpacing(spacing)}
+            </span>
+            <div className="w-px h-5 bg-slate-700 shrink-0" />
+          </div>
+
+          {/* Right side: chips in a 3-column grid */}
+          <div className="grid grid-cols-3 gap-1 flex-1 min-w-0 pt-0.5">
+            {doses.map((d, i) => (
+              <span
+                key={i}
+                className={`text-[13px] leading-none px-2 py-1 rounded font-mono border whitespace-nowrap flex items-center justify-center ${
+                  d.isDay
+                    ? "bg-amber-500/10 border-amber-500/40 text-amber-300"
+                    : "bg-indigo-500/10 border-indigo-400/40 text-indigo-300"
+                }`}
+              >
+                {formatHour(d.h)}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [meds, setMeds] = useState([newMed(0)]);
+  const [dragging, setDragging] = useState(null); // medId or null
+  const [hour12, setHour12] = useState(true);
+  const svgRef = useRef(null);
+
+  const size = 440;
+  const center = size / 2;
+  const outerR = 150;
+  const innerR = 110;
+  const tickOuter = 148;
+  const tickInner = 138;
+  const labelR = 174;
+
+  const DAY_START = 6;
+  const DAY_END = 18;
+
+  // Distribute medications across the colored band:
+  // 1 med → centered. 2 meds → outer + inner. 3 meds → outer, middle, inner. 4+ → evenly spaced.
+  const computeRingRadii = (count) => {
+    const bandOuter = 145; // just inside outerR (150)
+    const bandInner = 115; // just outside innerR (110)
+    const bandCenter = (bandOuter + bandInner) / 2;
+    if (count <= 1) return [bandCenter];
+    if (count === 2) return [bandOuter, bandInner];
+    if (count === 3) return [bandOuter, bandCenter, bandInner];
+    // 4+ evenly spaced from outer to inner
+    const step = (bandOuter - bandInner) / (count - 1);
+    return Array.from({ length: count }, (_, i) => bandOuter - i * step);
+  };
+  const ringRadii = computeRingRadii(meds.length);
+
+  const hourToAngle = (h) => (h / 24) * 2 * Math.PI - Math.PI / 2;
+
+  const arcPath = (hStart, hEnd, rOuter, rInner) => {
+    const a1 = hourToAngle(hStart);
+    const a2 = hourToAngle(hEnd);
+    const x1o = center + rOuter * Math.cos(a1);
+    const y1o = center + rOuter * Math.sin(a1);
+    const x2o = center + rOuter * Math.cos(a2);
+    const y2o = center + rOuter * Math.sin(a2);
+    const x1i = center + rInner * Math.cos(a1);
+    const y1i = center + rInner * Math.sin(a1);
+    const x2i = center + rInner * Math.cos(a2);
+    const y2i = center + rInner * Math.sin(a2);
+    const sweep = hEnd - hStart;
+    const largeArc = sweep > 12 ? 1 : 0;
+    return `M ${x1o} ${y1o} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x2o} ${y2o} L ${x2i} ${y2i} A ${rInner} ${rInner} 0 ${largeArc} 0 ${x1i} ${y1i} Z`;
+  };
+
+  const pointerToHours = (clientX, clientY) => {
+    const rect = svgRef.current.getBoundingClientRect();
+    const scale = rect.width / size;
+    const x = clientX - rect.left - center * scale;
+    const y = clientY - rect.top - center * scale;
+    let angle = Math.atan2(y, x) + Math.PI / 2;
+    if (angle < 0) angle += 2 * Math.PI;
+    return (angle / (2 * Math.PI)) * 24;
+  };
+
+  const updateMed = (id, patch) => {
+    setMeds((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  };
+
+  const startDragForMed = (medId) => (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(medId);
+    const point = e.touches ? e.touches[0] : e;
+    const h = pointerToHours(point.clientX, point.clientY);
+    const med = meds.find((m) => m.id === medId);
+    if (!med) return;
+    const spacing = 24 / med.count;
+    const nearest = Math.round(h / spacing) * spacing;
+    let newOffset = ((h - nearest) % 24 + 24) % 24;
+    // Snap to 5-minute increments (5/60 = 1/12 hour)
+    newOffset = Math.round(newOffset * 12) / 12;
+    if (newOffset >= 24) newOffset -= 24;
+    updateMed(medId, { offset: newOffset });
+  };
+
+  useEffect(() => {
+    if (dragging == null) return;
+    const move = (e) => {
+      const point = e.touches ? e.touches[0] : e;
+      const h = pointerToHours(point.clientX, point.clientY);
+      const med = meds.find((m) => m.id === dragging);
+      if (!med) return;
+      const spacing = 24 / med.count;
+      const nearest = Math.round(h / spacing) * spacing;
+      let newOffset = ((h - nearest) % 24 + 24) % 24;
+      newOffset = Math.round(newOffset * 12) / 12;
+      if (newOffset >= 24) newOffset -= 24;
+      updateMed(dragging, { offset: newOffset });
+    };
+    const end = () => setDragging(null);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    window.addEventListener("touchmove", move, { passive: false });
+    window.addEventListener("touchend", end);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", end);
+      window.removeEventListener("touchmove", move);
+      window.removeEventListener("touchend", end);
+    };
+  }, [dragging, meds]);
+
+  // Compute doses for each med
+  const medDoses = meds.map((med, idx) => {
+    const spacing = 24 / med.count;
+    const r = ringRadii[idx];
+    const doses = Array.from({ length: med.count }, (_, i) => {
+      const h = (i * spacing + med.offset) % 24;
+      const a = hourToAngle(h);
+      return {
+        h,
+        x: center + r * Math.cos(a),
+        y: center + r * Math.sin(a),
+        isDay: h >= DAY_START && h < DAY_END,
+      };
+    }).sort((a, b) => a.h - b.h);
+    return { med, doses, ringR: r, spacing };
+  });
+
+  const hourLabels = Array.from({ length: 24 }, (_, i) => i);
+
+  const formatHour = (h) => {
+    let hours = Math.floor(h);
+    const mins = Math.round((h - hours) * 60);
+    let m = mins;
+    if (m === 60) {
+      hours = (hours + 1) % 24;
+      m = 0;
+    }
+    if (hour12) {
+      const suffix = hours < 12 ? "AM" : "PM";
+      let h12 = hours % 12;
+      if (h12 === 0) h12 = 12;
+      const time = `${h12}:${m.toString().padStart(2, "0")}`;
+      return (
+        <>
+          {time}<span style={{ marginLeft: "2px" }}>{suffix}</span>
+        </>
+      );
+    }
+    return `${hours.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+  };
+
+  const formatSpacing = (spacing) => {
+    const hours = Math.floor(spacing);
+    const mins = Math.round((spacing - hours) * 60);
+    if (mins === 0) return `${hours}h`;
+    return `${hours}h ${mins}m`;
+  };
+
+  // Plain-text version of formatHour for the summary
+  const formatHourText = (h) => {
+    let hours = Math.floor(h);
+    const mins = Math.round((h - hours) * 60);
+    let m = mins;
+    if (m === 60) {
+      hours = (hours + 1) % 24;
+      m = 0;
+    }
+    if (hour12) {
+      const suffix = hours < 12 ? "AM" : "PM";
+      let h12 = hours % 12;
+      if (h12 === 0) h12 = 12;
+      return `${h12}:${m.toString().padStart(2, "0")} ${suffix}`;
+    }
+    return `${hours.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
+  };
+
+  // Encode meds to a compact hash for restoration. Each med = "name|count|offset|colorIdx"
+  const encodeHash = () => {
+    const data = meds.map((m) => {
+      const colorIdx = MED_COLORS.findIndex((c) => c.name === m.color.name);
+      return [m.name, m.count, Math.round(m.offset * 60) / 60, colorIdx];
+    });
+    const json = JSON.stringify(data);
+    // base64 encode
+    return btoa(unescape(encodeURIComponent(json)));
+  };
+
+  const decodeHash = (hash) => {
+    try {
+      const json = decodeURIComponent(escape(atob(hash.trim())));
+      const data = JSON.parse(json);
+      if (!Array.isArray(data)) return null;
+      return data.map(([name, count, offset, colorIdx], i) => ({
+        id: nextId++,
+        name: typeof name === "string" ? name : `Medication ${i + 1}`,
+        count: Math.max(1, Math.min(24, parseInt(count, 10) || 3)),
+        offset: ((Number(offset) || 0) % 24 + 24) % 24,
+        color: MED_COLORS[colorIdx] || MED_COLORS[i % MED_COLORS.length],
+      }));
+    } catch {
+      return null;
+    }
+  };
+
+  const scheduleHash = encodeHash();
+
+  // Build the schedule summary text (with hash at the end)
+  const summaryText = medDoses
+    .map(({ med, doses, spacing }) => {
+      const times = doses.map((d) => formatHourText(d.h)).join(", ");
+      return `${med.name}\n  ${med.count}× per day, every ${formatSpacing(spacing)}\n  Times: ${times}`;
+    })
+    .join("\n\n") + `\n\n— Restore code —\n${scheduleHash}`;
+
+  const [copied, setCopied] = useState(false);
+  const [restoreInput, setRestoreInput] = useState("");
+  const [restoreError, setRestoreError] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(summaryText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      const ta = document.getElementById("schedule-summary");
+      if (ta) {
+        ta.select();
+        document.execCommand("copy");
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }
+    }
+  };
+
+  const handleRestore = () => {
+    const restored = decodeHash(restoreInput);
+    if (restored && restored.length > 0) {
+      setMeds(restored);
+      setRestoreInput("");
+      setRestoreError(false);
+    } else {
+      setRestoreError(true);
+      setTimeout(() => setRestoreError(false), 2000);
+    }
+  };
+
+  // Generate an ICS file containing all dose events as daily-recurring events
+  const handleDownloadIcs = () => {
+    // Pad helper
+    const pad = (n) => n.toString().padStart(2, "0");
+
+    // Use today as the start date for recurring events
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = pad(now.getMonth() + 1);
+    const dd = pad(now.getDate());
+    const startDate = `${yyyy}${mm}${dd}`;
+
+    // Stamp for DTSTAMP (UTC)
+    const stamp =
+      now.getUTCFullYear().toString() +
+      pad(now.getUTCMonth() + 1) +
+      pad(now.getUTCDate()) + "T" +
+      pad(now.getUTCHours()) +
+      pad(now.getUTCMinutes()) +
+      pad(now.getUTCSeconds()) + "Z";
+
+    // Get user's local timezone
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+    const lines = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//RX Wheel//EN",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+    ];
+
+    medDoses.forEach(({ med, doses }) => {
+      doses.forEach((d, i) => {
+        const hh = Math.floor(d.h);
+        const mins = Math.round((d.h - hh) * 60);
+        const adjustedH = mins === 60 ? (hh + 1) % 24 : hh;
+        const adjustedM = mins === 60 ? 0 : mins;
+        const dtStart = `${startDate}T${pad(adjustedH)}${pad(adjustedM)}00`;
+        // 5 minute event duration
+        const endMinutes = adjustedM + 5;
+        const endH = endMinutes >= 60 ? (adjustedH + 1) % 24 : adjustedH;
+        const endM = endMinutes >= 60 ? endMinutes - 60 : endMinutes;
+        const dtEnd = `${startDate}T${pad(endH)}${pad(endM)}00`;
+        const uid = `rxwheel-${med.id}-${i}-${Date.now()}@rxwheel`;
+        const safeName = (med.name || "Medication").replace(/[\\,;]/g, " ");
+
+        lines.push(
+          "BEGIN:VEVENT",
+          `UID:${uid}`,
+          `DTSTAMP:${stamp}`,
+          `DTSTART;TZID=${tz}:${dtStart}`,
+          `DTEND;TZID=${tz}:${dtEnd}`,
+          "RRULE:FREQ=DAILY",
+          `SUMMARY:Take ${safeName}`,
+          `DESCRIPTION:RX Wheel scheduled dose`,
+          "BEGIN:VALARM",
+          "TRIGGER:-PT0M",
+          "ACTION:DISPLAY",
+          `DESCRIPTION:Take ${safeName}`,
+          "END:VALARM",
+          "END:VEVENT"
+        );
+      });
+    });
+
+    lines.push("END:VCALENDAR");
+    const ics = lines.join("\r\n");
+
+    // Try multiple download approaches for sandboxed/iOS environments
+    const filename = "rx-wheel-schedule.ics";
+
+    // Approach 1: Blob URL with anchor click
+    try {
+      const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.rel = "noopener";
+      a.target = "_blank";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return;
+    } catch (err) {
+      console.warn("Blob download failed, trying data URL", err);
+    }
+
+    // Approach 2: data URL fallback
+    try {
+      const dataUrl = "data:text/calendar;charset=utf-8," + encodeURIComponent(ics);
+      const w = window.open(dataUrl, "_blank");
+      if (!w) {
+        // Approach 3: location replace (last resort)
+        window.location.href = dataUrl;
+      }
+    } catch (err) {
+      alert("Could not generate calendar file. Try copying the schedule instead.");
+    }
+  };
+
+  const addMed = () => {
+    if (meds.length >= MED_COLORS.length) return;
+    setMeds((prev) => {
+      // pick the first color not currently in use
+      const used = new Set(prev.map((m) => m.color.name));
+      const color = MED_COLORS.find((c) => !used.has(c.name)) || MED_COLORS[prev.length];
+      return [...prev, { id: nextId++, count: 3, offset: 8 + prev.length * 1.5, color, name: `Medication ${prev.length + 1}` }];
+    });
+  };
+
+  const removeMed = (id) => {
+    setMeds((prev) => prev.filter((m) => m.id !== id));
+  };
+
+  return (
+    <div className="relative flex flex-col items-center min-h-screen bg-slate-950 text-slate-100 pt-16 pb-6 px-3 select-none">
+      {/* Top-right sliding 12/24h toggle */}
+      <div className="absolute top-4 right-4 flex items-center gap-2">
+        <span className={`text-xs font-semibold transition-colors ${hour12 ? "text-emerald-400" : "text-slate-500"}`}>
+          12h
+        </span>
+        <button
+          onClick={() => setHour12(!hour12)}
+          aria-label="Toggle 12 or 24 hour time"
+          role="switch"
+          aria-checked={hour12}
+          className="relative bg-slate-700 rounded-full h-7 w-12 shadow-inner"
+        >
+          <span
+            className="absolute top-0.5 h-6 w-6 rounded-full bg-emerald-500 shadow transition-all duration-200 ease-out"
+            style={hour12 ? { left: "2px" } : { left: "calc(100% - 26px)" }}
+          />
+        </button>
+        <span className={`text-xs font-semibold transition-colors ${!hour12 ? "text-emerald-400" : "text-slate-500"}`}>
+          24h
+        </span>
+      </div>
+
+      {/* RX Wheel logo */}
+      <img
+        src="data:image/png;base64,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"
+        alt="RX Wheel"
+        className="h-24 w-auto mb-2"
+      />
+      <p className="text-xs text-slate-400 mb-4">Drag a dose to shift the schedule</p>
+
+      <div className="mb-4 w-full max-w-[400px] px-2">
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${size} ${size}`}
+          className="touch-none w-full h-auto"
+        >
+          <defs>
+            <radialGradient
+              id="dayGrad"
+              gradientUnits="userSpaceOnUse"
+              cx={center}
+              cy={center}
+              r={outerR}
+            >
+              <stop offset={innerR / outerR} stopColor="#fbbf24" stopOpacity="0" />
+              <stop offset={130 / outerR} stopColor="#fbbf24" stopOpacity="1" />
+              <stop offset="1" stopColor="#f59e0b" stopOpacity="1" />
+            </radialGradient>
+            <radialGradient
+              id="nightGrad"
+              gradientUnits="userSpaceOnUse"
+              cx={center}
+              cy={center}
+              r={outerR}
+            >
+              <stop offset={innerR / outerR} stopColor="#312e81" stopOpacity="0" />
+              <stop offset={130 / outerR} stopColor="#1e1b4b" stopOpacity="1" />
+              <stop offset="1" stopColor="#1e1b4b" stopOpacity="1" />
+            </radialGradient>
+          </defs>
+
+          <path d={arcPath(DAY_END, DAY_START + 24, outerR, innerR)} fill="url(#nightGrad)" />
+          <path d={arcPath(DAY_START, DAY_END, outerR, innerR)} fill="url(#dayGrad)" />
+
+          {/* Outer border arcs (day and night colored) */}
+          {(() => {
+            const r = outerR;
+            const aDayStart = hourToAngle(DAY_START);
+            const aDayEnd = hourToAngle(DAY_END);
+            const dayPath = `M ${center + r * Math.cos(aDayStart)} ${center + r * Math.sin(aDayStart)} A ${r} ${r} 0 0 1 ${center + r * Math.cos(aDayEnd)} ${center + r * Math.sin(aDayEnd)}`;
+            const nightPath = `M ${center + r * Math.cos(aDayEnd)} ${center + r * Math.sin(aDayEnd)} A ${r} ${r} 0 0 1 ${center + r * Math.cos(aDayStart)} ${center + r * Math.sin(aDayStart)}`;
+            return (
+              <>
+                <path d={dayPath} fill="none" stroke="#fcd34d" strokeWidth="3" strokeLinecap="butt" />
+                <path d={nightPath} fill="none" stroke="#312e81" strokeWidth="3" strokeLinecap="butt" />
+              </>
+            );
+          })()}
+
+          {/* Hour ticks (always shown, except at 6 AM / 6 PM boundaries) */}
+          {hourLabels.map((h) => {
+            if (h === DAY_START || h === DAY_END) return null;
+            const a = hourToAngle(h);
+            const isMajor = h % 6 === 0;
+            const isDay = h >= DAY_START && h <= DAY_END;
+            const x1 = center + tickInner * Math.cos(a);
+            const y1 = center + tickInner * Math.sin(a);
+            const x2 = center + tickOuter * Math.cos(a);
+            const y2 = center + tickOuter * Math.sin(a);
+            return (
+              <line
+                key={`tick-${h}`}
+                x1={x1} y1={y1} x2={x2} y2={y2}
+                stroke={isDay ? "#78350f" : "#a5b4fc"}
+                strokeWidth={isMajor ? 2 : 1}
+                opacity={isMajor ? 0.9 : 0.5}
+              />
+            );
+          })}
+
+          {/* Inner labels: 24h numbers when in 12h mode, AM/PM when in 24h mode */}
+          {hourLabels.map((h) => {
+            const a = hourToAngle(h);
+            const isMajor = h % 6 === 0;
+            const lx = center + (innerR - 14) * Math.cos(a);
+            const ly = center + (innerR - 14) * Math.sin(a);
+            let label;
+            if (hour12) {
+              label = h === 0 ? 24 : h;
+            } else {
+              if (h === 0) label = "12a";
+              else if (h === 12) label = "12p";
+              else if (h < 12) label = `${h}a`;
+              else label = `${h - 12}p`;
+            }
+            return (
+              <text
+                key={`inner-${h}`}
+                x={lx} y={ly}
+                fill={isMajor ? "#e2e8f0" : "#94a3b8"}
+                fontSize={isMajor ? 13 : 10}
+                fontWeight={isMajor ? 600 : 400}
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {label}
+              </text>
+            );
+          })}
+
+          {/* Outer labels: AM/PM when in 12h mode, 24h numbers when in 24h mode */}
+          {hourLabels.map((h) => {
+            const a = hourToAngle(h);
+            const x = center + labelR * Math.cos(a);
+            const y = center + labelR * Math.sin(a);
+            const isDayLabel = h > DAY_START && h < DAY_END;
+            let label;
+            if (hour12) {
+              if (h === 0) label = "12\u2009AM";
+              else if (h === 12) label = "12\u2009PM";
+              else if (h < 12) label = `${h}\u2009AM`;
+              else label = `${h - 12}\u2009PM`;
+            } else {
+              label = h === 0 ? "24" : h.toString();
+            }
+            const isMajor = h % 3 === 0;
+            return (
+              <text
+                key={`outer-${h}`}
+                x={x} y={y}
+                fill={isDayLabel ? "#fbbf24" : "#a5b4fc"}
+                fontSize={hour12 ? (isMajor ? 14 : 12) : (isMajor ? 18 : 16)}
+                fontWeight={isMajor ? 700 : 500}
+                opacity={isMajor ? 1 : 0.9}
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {label}
+              </text>
+            );
+          })}
+
+          {/* Pill image at center */}
+          <image
+            href="data:image/png;base64,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"
+            x={center - 35}
+            y={center - 36}
+            width="70"
+            height="72"
+            preserveAspectRatio="xMidYMid meet"
+          />
+
+          {/* Faint guide ring per medication */}
+          {medDoses.map(({ med, ringR }) => (
+            <circle
+              key={`guide-${med.id}`}
+              cx={center} cy={center} r={ringR}
+              fill="none"
+              stroke={med.color.dot}
+              strokeWidth="1"
+              strokeDasharray="2 4"
+              opacity="0.25"
+            />
+          ))}
+
+          {/* Dots per medication */}
+          {medDoses.map(({ med, doses }) =>
+            doses.map((d, i) => (
+              <g
+                key={`${med.id}-${i}`}
+                onMouseDown={startDragForMed(med.id)}
+                onTouchStart={startDragForMed(med.id)}
+                style={{ cursor: dragging === med.id ? "grabbing" : "grab" }}
+              >
+                <circle cx={d.x} cy={d.y} r={14} fill={med.color.dot} opacity="0.2" />
+                <circle
+                  cx={d.x} cy={d.y} r={8}
+                  fill={med.color.dot}
+                  stroke={med.color.ring}
+                  strokeWidth="2.5"
+                />
+              </g>
+            ))
+          )}
+        </svg>
+      </div>
+
+      {/* One pill row per medication */}
+      <div className="flex flex-col items-center gap-2 w-full">
+        {medDoses.map(({ med, doses, spacing }) => (
+          <MedRow
+            key={med.id}
+            med={med}
+            doses={doses}
+            spacing={spacing}
+            hour12={hour12}
+            formatHour={formatHour}
+            formatSpacing={formatSpacing}
+            updateMed={updateMed}
+            removeMed={removeMed}
+            canDelete={meds.length > 1}
+          />
+        ))}
+
+        {/* Add medication button */}
+        {meds.length < MED_COLORS.length && (
+          <button
+            onClick={addMed}
+            className="flex items-center gap-2 bg-slate-800/60 hover:bg-slate-800 active:bg-slate-700 border border-dashed border-slate-600 rounded-full px-4 py-1.5 text-sm text-slate-300"
+          >
+            <span className="text-lg leading-none">+</span>
+            <span>Add medication</span>
+          </button>
+        )}
+
+        {/* Schedule summary with copy button */}
+        <div
+          className="relative mt-4 w-full"
+          style={{ width: "390px", maxWidth: "92vw" }}
+        >
+          {meds.length > 0 && (
+            <>
+              <div className="text-xs text-slate-400 mb-1 px-1">Schedule summary</div>
+              <textarea
+                id="schedule-summary"
+                readOnly
+                value={summaryText}
+                className="w-full bg-slate-800/60 border border-slate-700 rounded-2xl text-[12px] text-slate-200 font-mono p-3 pr-12 resize-none outline-none"
+                rows={Math.min(meds.length * 4 + 2, 10)}
+              />
+              <button
+                onClick={handleCopy}
+                className="absolute top-7 right-2 px-2.5 py-1 text-[11px] rounded-md bg-slate-700 active:bg-slate-600 text-slate-200 border border-slate-600"
+                aria-label="Copy schedule"
+              >
+                {copied ? "Copied!" : "Copy"}
+              </button>
+
+              {/* Add to Calendar button */}
+              <button
+                onClick={handleDownloadIcs}
+                className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2 text-sm rounded-xl bg-slate-700 active:bg-slate-600 text-slate-100 border border-slate-600 font-medium"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                  <line x1="16" y1="2" x2="16" y2="6" />
+                  <line x1="8" y1="2" x2="8" y2="6" />
+                  <line x1="3" y1="10" x2="21" y2="10" />
+                </svg>
+                Add to Calendar
+              </button>
+            </>
+          )}
+
+          {/* Restore from hash */}
+          <div className="mt-3">
+            <div className="text-xs text-slate-400 mb-1 px-1">Restore from code</div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={restoreInput}
+                onChange={(e) => {
+                  setRestoreInput(e.target.value);
+                  if (restoreError) setRestoreError(false);
+                }}
+                placeholder="Paste restore code"
+                className={`flex-1 min-w-0 bg-slate-800/60 border rounded-xl text-[12px] text-slate-200 font-mono px-3 py-2 outline-none ${
+                  restoreError ? "border-red-500/60" : "border-slate-700"
+                }`}
+              />
+              <button
+                onClick={handleRestore}
+                disabled={!restoreInput.trim()}
+                className="px-3 py-2 text-[12px] rounded-xl bg-emerald-600 active:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium"
+              >
+                Restore
+              </button>
+            </div>
+            {restoreError && (
+              <div className="text-[11px] text-red-400 mt-1 px-1">Invalid code</div>
+            )}
+          </div>
+        </div>
+
+        {/* Instructions */}
+        <div
+          className="mt-6 text-[12px] text-slate-400 leading-relaxed w-full"
+          style={{ width: "390px", maxWidth: "92vw" }}
+        >
+          <div className="text-xs text-slate-300 font-medium mb-2">How to use</div>
+          <ul className="space-y-1.5 list-disc pl-5">
+            <li>Use <span className="text-slate-200">+ / −</span> to set how many doses per day.</li>
+            <li>Drag any dot on the clock to shift that medication's schedule. Times stay equally spaced and snap to 5-minute increments.</li>
+            <li>Tap a medication's name to rename it.</li>
+            <li>Toggle <span className="text-slate-200">12h / 24h</span> in the top right to change the time format.</li>
+            <li>Swipe a medication card to the left to delete it.</li>
+            <li>Tap <span className="text-slate-200">+ Add medication</span> to track another schedule on the same clock.</li>
+            <li><span className="text-slate-200">Copy</span> the schedule summary to save or share it. Paste the restore code later to rebuild your schedule exactly.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
