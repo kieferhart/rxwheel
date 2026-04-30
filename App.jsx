@@ -15,7 +15,11 @@ const newMed = (i = 0) => ({
   offset: 8 + i * 1.5, // stagger initial offsets so dots don't overlap
   color: MED_COLORS[i % MED_COLORS.length],
   name: `Medication ${i + 1}`,
+  doseOffsets: [0, 0, 0], // per-dose drift in hours; constrained so adjacent gaps stay within ±20%
 });
+
+// Maximum drift constraint: any two consecutive doses' gap must stay within ±20% of equal spacing
+const GAP_TOLERANCE = 0.2;
 
 const DELETE_THRESHOLD = 105; // pixels swiped left before delete triggers
 
@@ -166,6 +170,19 @@ function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, update
 export default function App() {
   const [meds, setMeds] = useState([newMed(0)]);
   const [dragging, setDragging] = useState(null); // medId or null
+  // freeDose tracks which dose (if any) is in independent-drag mode after double-tap.
+  // Shape: { medId, doseIndex } or null
+  const [freeDose, setFreeDose] = useState(null);
+  // Track tap timing for double-tap detection
+  const lastTapRef = useRef({ medId: null, doseIndex: null, time: 0 });
+
+  // Any tap on the SVG background (not on a dot) clears fine-tuning.
+  // Dots call stopPropagation so they don't reach this handler.
+  const handleBgTap = () => {
+    if (freeDose !== null) {
+      setFreeDose(null);
+    }
+  };
   const [hour12, setHour12] = useState(true);
   const svgRef = useRef(null);
 
@@ -224,24 +241,141 @@ export default function App() {
   };
 
   const updateMed = (id, patch) => {
-    setMeds((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+    setMeds((prev) =>
+      prev.map((m) => {
+        if (m.id !== id) return m;
+        const next = { ...m, ...patch };
+        // If count changed, reset doseOffsets to the new length
+        if (patch.count !== undefined && patch.count !== m.count) {
+          next.doseOffsets = new Array(patch.count).fill(0);
+        }
+        // Ensure doseOffsets exists and matches count (for legacy restored meds)
+        if (!Array.isArray(next.doseOffsets) || next.doseOffsets.length !== next.count) {
+          next.doseOffsets = new Array(next.count).fill(0);
+        }
+        return next;
+      })
+    );
   };
 
-  const startDragForMed = (medId) => (e) => {
+  // Compute the constraint window for a single dose's drift in free mode.
+  // The dose's drift δ_i is constrained by both adjacent gaps:
+  //   gap_before = spacing + δ_i - δ_(i-1) ∈ [spacing*(1-tol), spacing*(1+tol)]
+  //   gap_after  = spacing + δ_(i+1) - δ_i ∈ [spacing*(1-tol), spacing*(1+tol)]
+  // (with wraparound — the gap from last dose back to first counts too)
+  // Returns { min, max } drift bounds for δ_i in hours.
+  const getDriftBounds = (med, i) => {
+    const spacing = 24 / med.count;
+    const tol = GAP_TOLERANCE * spacing;
+    const offsets = med.doseOffsets || new Array(med.count).fill(0);
+    const n = med.count;
+    if (n === 1) {
+      // Single dose: no gap constraint (wrap-around to itself is 24h regardless)
+      return { min: -tol, max: tol };
+    }
+    const prev = offsets[(i - 1 + n) % n] || 0;
+    const next = offsets[(i + 1) % n] || 0;
+    // gap_before = spacing + δ_i - prev must be in [spacing-tol, spacing+tol]
+    //   → δ_i ∈ [prev - tol, prev + tol]
+    // gap_after = spacing + next - δ_i must be in [spacing-tol, spacing+tol]
+    //   → δ_i ∈ [next - tol, next + tol]
+    const minA = prev - tol;
+    const maxA = prev + tol;
+    const minB = next - tol;
+    const maxB = next + tol;
+    return {
+      min: Math.max(minA, minB),
+      max: Math.min(maxA, maxB),
+    };
+  };
+
+  const startDragForMed = (medId, doseIndex) => (e) => {
     e.preventDefault();
     e.stopPropagation();
+
+    const now = Date.now();
+    const last = lastTapRef.current;
+    const isDoubleTap =
+      last.medId === medId &&
+      last.doseIndex === doseIndex &&
+      now - last.time < 350;
+    lastTapRef.current = { medId, doseIndex, time: now };
+
+    const med = meds.find((m) => m.id === medId);
+    if (!med) return;
+
+    if (isDoubleTap) {
+      // Enter free mode for this specific dose
+      setFreeDose({ medId, doseIndex });
+      setDragging(medId);
+      // Don't update offset on the tap itself — wait for actual drag movement
+      return;
+    }
+
+    // Schedule-mode drag: dragging anywhere clears any previously-set free mode
+    // unless we're dragging the same dose that's already in free mode.
+    const stillFree =
+      freeDose && freeDose.medId === medId && freeDose.doseIndex === doseIndex;
+    if (!stillFree && freeDose !== null) {
+      setFreeDose(null);
+    }
+
     setDragging(medId);
     const point = e.touches ? e.touches[0] : e;
     const h = pointerToHours(point.clientX, point.clientY);
-    const med = meds.find((m) => m.id === medId);
-    if (!med) return;
+
+    if (stillFree) {
+      // Continue free-mode drag: update only this dose's offset
+      applyFreeDoseDrag(med, doseIndex, h);
+    } else {
+      // Whole-schedule drag: align nearest dose to pointer
+      applyScheduleDrag(med, h);
+    }
+  };
+
+  // Update the schedule offset so the dose nearest the pointer lands at it
+  const applyScheduleDrag = (med, h) => {
     const spacing = 24 / med.count;
-    const nearest = Math.round(h / spacing) * spacing;
-    let newOffset = ((h - nearest) % 24 + 24) % 24;
-    // Snap to 5-minute increments (5/60 = 1/12 hour)
+    const offsets = med.doseOffsets || new Array(med.count).fill(0);
+    // Find which dose the pointer is closest to (accounting for current drift)
+    let bestI = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < med.count; i++) {
+      const doseH = (i * spacing + med.offset + (offsets[i] || 0)) % 24;
+      let d = Math.abs(doseH - h);
+      d = Math.min(d, 24 - d); // wrap-aware distance
+      if (d < bestDist) {
+        bestDist = d;
+        bestI = i;
+      }
+    }
+    // We want this dose to land at h: i*spacing + newOffset + drift = h
+    let newOffset = h - bestI * spacing - (offsets[bestI] || 0);
+    newOffset = ((newOffset % 24) + 24) % 24;
     newOffset = Math.round(newOffset * 12) / 12;
     if (newOffset >= 24) newOffset -= 24;
-    updateMed(medId, { offset: newOffset });
+    updateMed(med.id, { offset: newOffset });
+  };
+
+  // Update a single dose's drift, clamped to ±20% gap constraint
+  const applyFreeDoseDrag = (med, doseIndex, h) => {
+    const spacing = 24 / med.count;
+    const offsets = med.doseOffsets || new Array(med.count).fill(0);
+    // Desired drift = pointer hour - scheduled time of this dose
+    let desiredH = h - (doseIndex * spacing + med.offset);
+    // Wrap to [-12, 12] so we pick the shortest path
+    desiredH = ((desiredH + 12) % 24 + 24) % 24 - 12;
+
+    // Snap to 5-min increments
+    desiredH = Math.round(desiredH * 12) / 12;
+
+    // Clamp to gap bounds
+    const { min, max } = getDriftBounds(med, doseIndex);
+    const clamped = Math.max(min, Math.min(max, desiredH));
+
+    const newOffsets = [...offsets];
+    newOffsets[doseIndex] = clamped;
+    updateMed(med.id, { doseOffsets: newOffsets });
   };
 
   useEffect(() => {
@@ -251,12 +385,18 @@ export default function App() {
       const h = pointerToHours(point.clientX, point.clientY);
       const med = meds.find((m) => m.id === dragging);
       if (!med) return;
-      const spacing = 24 / med.count;
-      const nearest = Math.round(h / spacing) * spacing;
-      let newOffset = ((h - nearest) % 24 + 24) % 24;
-      newOffset = Math.round(newOffset * 12) / 12;
-      if (newOffset >= 24) newOffset -= 24;
-      updateMed(dragging, { offset: newOffset });
+      if (freeDose && freeDose.medId === dragging) {
+        applyFreeDoseDrag(med, freeDose.doseIndex, h);
+      } else {
+        // Whole schedule drag — keep the same dose under the pointer
+        // We don't re-pick which dose is "anchor"; just shift offset so pointer tracks.
+        const spacing = 24 / med.count;
+        const nearest = Math.round(h / spacing) * spacing;
+        let newOffset = ((h - nearest) % 24 + 24) % 24;
+        newOffset = Math.round(newOffset * 12) / 12;
+        if (newOffset >= 24) newOffset -= 24;
+        updateMed(dragging, { offset: newOffset });
+      }
     };
     const end = () => setDragging(null);
     window.addEventListener("mousemove", move);
@@ -269,17 +409,22 @@ export default function App() {
       window.removeEventListener("touchmove", move);
       window.removeEventListener("touchend", end);
     };
-  }, [dragging, meds]);
+  }, [dragging, freeDose, meds]);
 
   // Compute doses for each med
   const medDoses = meds.map((med, idx) => {
     const spacing = 24 / med.count;
     const r = ringRadii[idx];
+    const offsets = med.doseOffsets || new Array(med.count).fill(0);
     const doses = Array.from({ length: med.count }, (_, i) => {
-      const h = (i * spacing + med.offset) % 24;
+      const driftedH = i * spacing + med.offset + (offsets[i] || 0);
+      // Snap to 5-min increments to absorb floating-point drift from spacing math
+      const snapped = Math.round(driftedH * 12) / 12;
+      const h = ((snapped % 24) + 24) % 24;
       const a = hourToAngle(h);
       return {
         h,
+        doseIndex: i,
         x: center + r * Math.cos(a),
         y: center + r * Math.sin(a),
         isDay: h >= DAY_START && h < DAY_END,
@@ -341,43 +486,86 @@ export default function App() {
   const encodeHash = () => {
     const data = meds.map((m) => {
       const colorIdx = MED_COLORS.findIndex((c) => c.name === m.color.name);
-      return [m.name, m.count, Math.round(m.offset * 60) / 60, colorIdx];
+      const offsets = (m.doseOffsets || new Array(m.count).fill(0))
+        .map((d) => Math.round((d || 0) * 60) / 60);
+      return [m.name, m.count, Math.round(m.offset * 60) / 60, colorIdx, offsets];
     });
     const json = JSON.stringify(data);
-    // base64 encode
-    return btoa(unescape(encodeURIComponent(json)));
+    // URL-safe base64: replace +,/ with -,_ and strip = padding so it can live cleanly in a URL.
+    return btoa(unescape(encodeURIComponent(json)))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
   };
 
   const decodeHash = (hash) => {
     try {
-      const json = decodeURIComponent(escape(atob(hash.trim())));
+      let s = hash.trim();
+      // Convert URL-safe base64 back to standard base64 and re-pad
+      s = s.replace(/-/g, "+").replace(/_/g, "/");
+      while (s.length % 4) s += "=";
+      const json = decodeURIComponent(escape(atob(s)));
       const data = JSON.parse(json);
       if (!Array.isArray(data)) return null;
-      return data.map(([name, count, offset, colorIdx], i) => ({
-        id: nextId++,
-        name: typeof name === "string" ? name : `Medication ${i + 1}`,
-        count: Math.max(1, Math.min(24, parseInt(count, 10) || 3)),
-        offset: ((Number(offset) || 0) % 24 + 24) % 24,
-        color: MED_COLORS[colorIdx] || MED_COLORS[i % MED_COLORS.length],
-      }));
+      return data.map(([name, count, offset, colorIdx, doseOffsets], i) => {
+        const c = Math.max(1, Math.min(24, parseInt(count, 10) || 3));
+        const offsets = Array.isArray(doseOffsets) && doseOffsets.length === c
+          ? doseOffsets.map((d) => Number(d) || 0)
+          : new Array(c).fill(0);
+        return {
+          id: nextId++,
+          name: typeof name === "string" ? name : `Medication ${i + 1}`,
+          count: c,
+          offset: ((Number(offset) || 0) % 24 + 24) % 24,
+          color: MED_COLORS[colorIdx] || MED_COLORS[i % MED_COLORS.length],
+          doseOffsets: offsets,
+        };
+      });
     } catch {
       return null;
     }
   };
 
-  const scheduleHash = encodeHash();
+  // On first mount, check if the URL has a schedule encoded in the hash fragment.
+  // Format: https://rxwheel.com/#code=<base64hash>
+  // Backward compatible with a raw hash too: https://rxwheel.com/#<base64hash>
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.location.hash) return;
+    const raw = window.location.hash.slice(1); // strip leading '#'
+    let candidate = raw;
+    if (raw.startsWith("code=")) candidate = raw.slice(5);
+    if (!candidate) return;
+    const restored = decodeHash(candidate);
+    if (restored && restored.length > 0) {
+      setMeds(restored);
+      // Clear the hash so refreshing/sharing this URL again is clean,
+      // and so the user can edit without the URL drifting back to the loaded version.
+      try {
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      } catch {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Build the schedule summary text (with hash at the end)
-  const summaryText = medDoses
+  const scheduleHash = encodeHash();
+  // Build a shareable URL with the schedule encoded in the URL hash fragment.
+  // If the user is on a known host, use that; otherwise fall back to rxwheel.com.
+  const shareUrl = (() => {
+    if (typeof window !== "undefined" && window.location && window.location.host) {
+      return `${window.location.origin}/#code=${scheduleHash}`;
+    }
+    return `https://rxwheel.com/#code=${scheduleHash}`;
+  })();
+
+  // Build the schedule summary text (with shareable link at the end)
+  const summaryText = "Your medication schedule made with RXwheel.com\n\n" + medDoses
     .map(({ med, doses, spacing }) => {
       const times = doses.map((d) => formatHourText(d.h)).join(", ");
       return `${med.name}\n  ${med.count}× per day, every ${formatSpacing(spacing)}\n  Times: ${times}`;
     })
-    .join("\n\n") + `\n\n— Restore code —\n${scheduleHash}`;
+    .join("\n\n") + `\n\n— Open or edit this schedule —\n${shareUrl}`;
 
   const [copied, setCopied] = useState(false);
-  const [restoreInput, setRestoreInput] = useState("");
-  const [restoreError, setRestoreError] = useState(false);
 
   const handleCopy = async () => {
     try {
@@ -392,18 +580,6 @@ export default function App() {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
       }
-    }
-  };
-
-  const handleRestore = () => {
-    const restored = decodeHash(restoreInput);
-    if (restored && restored.length > 0) {
-      setMeds(restored);
-      setRestoreInput("");
-      setRestoreError(false);
-    } else {
-      setRestoreError(true);
-      setTimeout(() => setRestoreError(false), 2000);
     }
   };
 
@@ -516,12 +692,407 @@ export default function App() {
       // pick the first color not currently in use
       const used = new Set(prev.map((m) => m.color.name));
       const color = MED_COLORS.find((c) => !used.has(c.name)) || MED_COLORS[prev.length];
-      return [...prev, { id: nextId++, count: 3, offset: 8 + prev.length * 1.5, color, name: `Medication ${prev.length + 1}` }];
+      return [...prev, { id: nextId++, count: 3, offset: 8 + prev.length * 1.5, color, name: `Medication ${prev.length + 1}`, doseOffsets: [0, 0, 0] }];
     });
   };
 
   const removeMed = (id) => {
     setMeds((prev) => prev.filter((m) => m.id !== id));
+  };
+
+  // ---- Sleep optimization helpers ----
+  const SLEEP_START = 23; // 11 PM — hard sleep starts here (after 11:00)
+  const SLEEP_END = 5;    // 5 AM — hard sleep ends here (before 5:00)
+  const BUFFER_START = 22; // 10 PM — soft sleep zone is (22, 23]
+  const BUFFER_END = 6;    // 6 AM — soft sleep zone is [5, 6)
+  const SNAP_BUCKET = 1 / 12; // 5 minutes in hours
+
+  // Returns sleep weight for a given hour:
+  //   1.0 = hard sleep (11 PM – 5 AM)
+  //   0.5 = buffer zone (10–11 PM and 5–6 AM)
+  //   0.0 = fully awake
+  const sleepWeight = (h) => {
+    if (h > SLEEP_START || h < SLEEP_END) return 1.0; // hard sleep
+    if ((h > BUFFER_START && h <= SLEEP_START) ||
+        (h >= SLEEP_END && h < BUFFER_END)) return 0.5; // buffer
+    return 0;
+  };
+
+  // Backward compatibility wrappers (used in legacy paths)
+  const isInSleep = (h) => sleepWeight(h) > 0;
+
+  // For a dose hour, how "deep" into sleep it is. 0 if awake.
+  const sleepDepth = (h) => {
+    const w = sleepWeight(h);
+    if (w === 0) return 0;
+    const distA = h > BUFFER_START ? (24 - h) + BUFFER_END : BUFFER_END - h;
+    const distB = h > BUFFER_START ? h - BUFFER_START : (24 - BUFFER_START) + h;
+    return Math.min(distA, distB);
+  };
+
+  // Bucket a dose hour to a 5-minute slot index (0..287). Used to count distinct times.
+  const bucket = (h) => Math.round(h / SNAP_BUCKET) % 288;
+
+  // Compute the dose hours for a med given offset and per-dose drift
+  const getDoseHours = (med, offset, doseOffsets) => {
+    const spacing = 24 / med.count;
+    const offsets = doseOffsets || new Array(med.count).fill(0);
+    return Array.from({ length: med.count }, (_, i) => {
+      const h = (i * spacing + offset + (offsets[i] || 0)) % 24;
+      return ((h % 24) + 24) % 24;
+    });
+  };
+
+  // Score a combined schedule: returns {sleepCount, distinctTimes, sleepDepthSum}
+  // sleepCount and sleepDepthSum are weighted by sleepWeight (1.0 hard, 0.5 buffer).
+  const scoreSchedule = (medsArr, offsets, perDoseOffsets) => {
+    const buckets = new Set();
+    let sleepCount = 0;
+    let depthSum = 0;
+    for (let mi = 0; mi < medsArr.length; mi++) {
+      const m = medsArr[mi];
+      const hours = getDoseHours(m, offsets[mi], perDoseOffsets[mi]);
+      for (const h of hours) {
+        buckets.add(bucket(h));
+        const w = sleepWeight(h);
+        if (w > 0) {
+          sleepCount += w;
+          depthSum += w * sleepDepth(h);
+        }
+      }
+    }
+    return { sleepCount, distinctTimes: buckets.size, sleepDepthSum: depthSum };
+  };
+
+  // Find candidate offsets for a single medication, ranked by how achievable a
+  // sleep-free schedule is with per-dose drift available.
+  const findCandidateOffsets = (med, topN = 4, tolerance = GAP_TOLERANCE) => {
+    const spacing = 24 / med.count;
+    const driftBudget = tolerance * spacing; // hours
+    const candidates = [];
+    for (let step = 0; step < spacing * 12; step++) {
+      const candidate = step / 12;
+      const hours = getDoseHours(med, candidate, null);
+      let sleepCount = 0;       // weighted sleep total (no drift)
+      let unfixableCount = 0;   // hard-sleep doses that drift can't escape
+      let depthSum = 0;
+      for (const h of hours) {
+        const w = sleepWeight(h);
+        if (w > 0) {
+          sleepCount += w;
+          const depth = sleepDepth(h);
+          depthSum += w * depth;
+          // Only count as "unfixable" if it's in HARD sleep AND too deep for drift.
+          // Buffer zone is acceptable as a fallback so we don't penalize candidates
+          // whose only sleep dose is in the buffer.
+          if (w === 1.0 && depth > driftBudget) unfixableCount++;
+        }
+      }
+      candidates.push({ offset: candidate, sleepCount, unfixableCount, depthSum });
+    }
+    // Sort: prioritize fewest unfixable (drift can't help), then total sleep count, then total depth
+    candidates.sort((a, b) => {
+      if (a.unfixableCount !== b.unfixableCount) return a.unfixableCount - b.unfixableCount;
+      if (a.sleepCount !== b.sleepCount) return a.sleepCount - b.sleepCount;
+      return a.depthSum - b.depthSum;
+    });
+    return candidates.slice(0, topN).map((c) => c.offset);
+  };
+
+  // Compare two schedule scores: lower is better
+  // Priority: sleepCount → distinctTimes → sleepDepthSum
+  const compareScores = (a, b) => {
+    if (a.sleepCount !== b.sleepCount) return a.sleepCount - b.sleepCount;
+    if (a.distinctTimes !== b.distinctTimes) return a.distinctTimes - b.distinctTimes;
+    return a.sleepDepthSum - b.sleepDepthSum;
+  };
+
+  // Compute drift bounds given the *fixed* gap constraint (used during search)
+  const driftBoundsFor = (med, i, currentOffsets) => {
+    const spacing = 24 / med.count;
+    const tol = GAP_TOLERANCE * spacing;
+    const n = med.count;
+    if (n === 1) return { min: -tol, max: tol };
+    const prev = currentOffsets[(i - 1 + n) % n] || 0;
+    const next = currentOffsets[(i + 1) % n] || 0;
+    return {
+      min: Math.max(prev - tol, next - tol),
+      max: Math.min(prev + tol, next + tol),
+    };
+  };
+
+  // Basic Optimize: same algorithm as Super, but with a tighter ±10% gap tolerance
+  const optimizeForSleep = () => {
+    runSleepOptimizer(0.10);
+  };
+
+  // Super Optimize: full ±20% per-gap drift allowed
+  const superOptimizeForSleep = () => {
+    runSleepOptimizer(GAP_TOLERANCE);
+  };
+
+  // Shared optimizer: combinatorial offset search + per-dose drift + pair-meet clustering.
+  // `tolerance` is the per-gap drift fraction (0.10 for basic, 0.20 for super).
+  const runSleepOptimizer = (tolerance) => {
+    setFreeDose(null);
+
+    setMeds((prev) => {
+      if (prev.length === 0) return prev;
+
+      // Phase 1: get top candidate offsets per med
+      const candidatesPerMed = prev.map((m) => findCandidateOffsets(m, 4, tolerance));
+
+      // Phase 2: search combinations to find best base offsets
+      // For each med, try each candidate; pick the combination with best score
+      const cap = candidatesPerMed.reduce((acc, arr) => acc * arr.length, 1);
+      // Safety cap on combinations
+      const MAX_COMBOS = 1500;
+
+      let bestOffsets = candidatesPerMed.map((arr) => arr[0]);
+      let bestScore = scoreSchedule(
+        prev,
+        bestOffsets,
+        prev.map((m) => new Array(m.count).fill(0))
+      );
+
+      if (cap <= MAX_COMBOS) {
+        // Enumerate all combinations
+        const indices = new Array(prev.length).fill(0);
+        let done = false;
+        while (!done) {
+          const offs = indices.map((idx, mi) => candidatesPerMed[mi][idx]);
+          const score = scoreSchedule(
+            prev,
+            offs,
+            prev.map((m) => new Array(m.count).fill(0))
+          );
+          if (compareScores(score, bestScore) < 0) {
+            bestScore = score;
+            bestOffsets = offs;
+          }
+          // increment combo
+          let k = prev.length - 1;
+          while (k >= 0) {
+            indices[k]++;
+            if (indices[k] < candidatesPerMed[k].length) break;
+            indices[k] = 0;
+            k--;
+          }
+          if (k < 0) done = true;
+        }
+      }
+
+      // Phase 3: per-dose drift to cluster doses (integer 5-min slot arithmetic)
+      // Slot = integer 0..287 representing a 5-minute bucket of the day.
+      // 12 slots per hour, 288 total.
+      const SLOTS = 288;
+      const SLOTS_PER_HOUR = 12;
+      // Returns sleep weight for a slot:
+      //   1.0 = hard sleep (11 PM – 5 AM)
+      //   0.5 = buffer zone (10–11 PM, 5–6 AM)
+      //   0.0 = awake
+      const slotSleepWeight = (slot) => {
+        const h = slot / SLOTS_PER_HOUR;
+        if (h > SLEEP_START || h < SLEEP_END) return 1.0;
+        if ((h > BUFFER_START && h <= SLEEP_START) ||
+            (h >= SLEEP_END && h < BUFFER_END)) return 0.5;
+        return 0;
+      };
+      const slotInSleep = (slot) => slotSleepWeight(slot) > 0;
+      const slotSleepDepth = (slot) => {
+        if (!slotInSleep(slot)) return 0;
+        const h = slot / SLOTS_PER_HOUR;
+        const distA = h > BUFFER_START ? (24 - h) + BUFFER_END : BUFFER_END - h;
+        const distB = h > BUFFER_START ? h - BUFFER_START : (24 - BUFFER_START) + h;
+        return Math.min(distA, distB);
+      };
+
+      // Convert offsets from hours to integer slot offsets
+      const baseOffsetSlots = bestOffsets.map((o) => Math.round(o * SLOTS_PER_HOUR));
+      const driftSlots = prev.map((m) => new Array(m.count).fill(0)); // each dose's drift in slot units
+
+      const driftBoundsSlots = (medIdx, doseIdx) => {
+        const m = prev[medIdx];
+        const n = m.count;
+        const spacing = 24 / n;
+        const tolSlots = Math.floor(tolerance * spacing * SLOTS_PER_HOUR);
+        if (n === 1) return { min: -tolSlots, max: tolSlots };
+        const dArr = driftSlots[medIdx];
+        const prevDrift = dArr[(doseIdx - 1 + n) % n] || 0;
+        const nextDrift = dArr[(doseIdx + 1) % n] || 0;
+        return {
+          min: Math.max(prevDrift - tolSlots, nextDrift - tolSlots),
+          max: Math.min(prevDrift + tolSlots, nextDrift + tolSlots),
+        };
+      };
+
+      const computeSlot = (medIdx, doseIdx) => {
+        const m = prev[medIdx];
+        const spacing = 24 / m.count;
+        const baseSlot = Math.round(doseIdx * spacing * SLOTS_PER_HOUR) + baseOffsetSlots[medIdx];
+        const slot = ((baseSlot + driftSlots[medIdx][doseIdx]) % SLOTS + SLOTS) % SLOTS;
+        return slot;
+      };
+
+      // Score a candidate slot for dose (mi, di) given current schedule.
+      // Insight: sleep penalty is per "trip to the medicine cabinet" — if another
+      // dose is already at this slot, joining it adds no new sleep cost.
+      const scoreSlot = (slot, mi, di) => {
+        let score = 0;
+
+        // Check whether any other dose is already in this exact slot (joining = free)
+        let alreadyOccupied = false;
+        for (let omi = 0; omi < prev.length && !alreadyOccupied; omi++) {
+          for (let odi = 0; odi < prev[omi].count && !alreadyOccupied; odi++) {
+            if (omi === mi && odi === di) continue;
+            if (computeSlot(omi, odi) === slot) alreadyOccupied = true;
+          }
+        }
+
+        const w = slotSleepWeight(slot);
+        if (w > 0 && !alreadyOccupied) {
+          // Pay the sleep penalty only if we'd be the first/only dose at this time.
+          score += w * (100000 + slotSleepDepth(slot) * 1000);
+        }
+
+        // Clustering bonus: reward proximity to other doses with graduated bonus
+        for (let omi = 0; omi < prev.length; omi++) {
+          for (let odi = 0; odi < prev[omi].count; odi++) {
+            if (omi === mi && odi === di) continue;
+            const oslot = computeSlot(omi, odi);
+            const dist = Math.min(
+              Math.abs(oslot - slot),
+              SLOTS - Math.abs(oslot - slot)
+            );
+            // Big reward for exact match (same 5-min slot)
+            if (dist === 0) score -= 500;
+            // Graduated reward up to 12 slots (1 hour) away
+            else if (dist <= 12) score -= Math.round((13 - dist) * 8);
+          }
+        }
+        return score;
+      };
+
+      // Helper: get the reachable slot range for a given dose, considering current state.
+      const reachableSlotRange = (mi, di) => {
+        const m = prev[mi];
+        const spacing = 24 / m.count;
+        const baseSlot =
+          Math.round(di * spacing * SLOTS_PER_HOUR) + baseOffsetSlots[mi];
+        const { min, max } = driftBoundsSlots(mi, di);
+        return { baseSlot, min, max };
+      };
+
+      // Compute the total schedule score (used for accept/reject of pair moves)
+      const totalScore = () => {
+        let total = 0;
+        for (let mi = 0; mi < prev.length; mi++) {
+          for (let di = 0; di < prev[mi].count; di++) {
+            const slot = computeSlot(mi, di);
+            total += scoreSlot(slot, mi, di);
+          }
+        }
+        return total;
+      };
+
+      // Phase 3a: Pair-meet pass.
+      // For every pair of doses from different medications, see if both can drift
+      // to a common slot. If clustering them improves the total score, apply.
+      const tryPairMeet = () => {
+        for (let mi1 = 0; mi1 < prev.length; mi1++) {
+          for (let di1 = 0; di1 < prev[mi1].count; di1++) {
+            for (let mi2 = mi1 + 1; mi2 < prev.length; mi2++) {
+              for (let di2 = 0; di2 < prev[mi2].count; di2++) {
+                const r1 = reachableSlotRange(mi1, di1);
+                const r2 = reachableSlotRange(mi2, di2);
+
+                // Save current drifts to restore on reject
+                const savedD1 = driftSlots[mi1][di1];
+                const savedD2 = driftSlots[mi2][di2];
+                const baselineScore = totalScore();
+
+                let bestPairScore = baselineScore;
+                let bestD1 = savedD1;
+                let bestD2 = savedD2;
+
+                // Iterate every slot dose 1 can reach. For each, check if dose 2
+                // can also reach it (mod SLOTS), and if so try aligning there.
+                for (let d1 = r1.min; d1 <= r1.max; d1++) {
+                  const targetSlot = ((r1.baseSlot + d1) % SLOTS + SLOTS) % SLOTS;
+                  // What drift does dose 2 need to land at targetSlot?
+                  // Try the drift in the range [-(SLOTS/2), SLOTS/2) closest to 0.
+                  let d2 = targetSlot - r2.baseSlot;
+                  // Normalize to nearest representation
+                  while (d2 > SLOTS / 2) d2 -= SLOTS;
+                  while (d2 < -SLOTS / 2) d2 += SLOTS;
+                  if (d2 < r2.min || d2 > r2.max) continue;
+
+                  driftSlots[mi1][di1] = d1;
+                  driftSlots[mi2][di2] = d2;
+                  const s = totalScore();
+                  if (s < bestPairScore) {
+                    bestPairScore = s;
+                    bestD1 = d1;
+                    bestD2 = d2;
+                  }
+                }
+
+                driftSlots[mi1][di1] = bestD1;
+                driftSlots[mi2][di2] = bestD2;
+              }
+            }
+          }
+        }
+      };
+
+      // Run multiple passes alternating direction so doses can pull each other into clusters.
+      for (let pass = 0; pass < 6; pass++) {
+        const reverse = pass % 2 === 1;
+        const medOrder = reverse
+          ? [...prev.keys()].reverse()
+          : [...prev.keys()];
+        for (const mi of medOrder) {
+          const m = prev[mi];
+          const doseOrder = reverse
+            ? [...Array(m.count).keys()].reverse()
+            : [...Array(m.count).keys()];
+          for (const di of doseOrder) {
+            const { min, max } = driftBoundsSlots(mi, di);
+            const spacing = 24 / m.count;
+            const baseSlot =
+              Math.round(di * spacing * SLOTS_PER_HOUR) + baseOffsetSlots[mi];
+
+            let bestDrift = driftSlots[mi][di];
+            const currentSlot = ((baseSlot + bestDrift) % SLOTS + SLOTS) % SLOTS;
+            let bestScore = scoreSlot(currentSlot, mi, di);
+
+            for (let d = min; d <= max; d++) {
+              const candSlot = ((baseSlot + d) % SLOTS + SLOTS) % SLOTS;
+              const s = scoreSlot(candSlot, mi, di);
+              if (s < bestScore) {
+                bestScore = s;
+                bestDrift = d;
+              }
+            }
+            driftSlots[mi][di] = bestDrift;
+          }
+        }
+        // After each pass, do a pair-meet round to find cluster opportunities
+        // that single-dose moves can't see.
+        tryPairMeet();
+      }
+
+      // Convert slot drifts back to hours
+      const perDoseOffsets = driftSlots.map((arr) =>
+        arr.map((s) => s / SLOTS_PER_HOUR)
+      );
+
+      return prev.map((m, mi) => ({
+        ...m,
+        offset: baseOffsetSlots[mi] / SLOTS_PER_HOUR,
+        doseOffsets: perDoseOffsets[mi],
+      }));
+    });
   };
 
   return (
@@ -561,6 +1132,8 @@ export default function App() {
           ref={svgRef}
           viewBox={`0 0 ${size} ${size}`}
           className="touch-none w-full h-auto"
+          onMouseDown={handleBgTap}
+          onTouchStart={handleBgTap}
         >
           <defs>
             <radialGradient
@@ -713,22 +1286,48 @@ export default function App() {
 
           {/* Dots per medication */}
           {medDoses.map(({ med, doses }) =>
-            doses.map((d, i) => (
-              <g
-                key={`${med.id}-${i}`}
-                onMouseDown={startDragForMed(med.id)}
-                onTouchStart={startDragForMed(med.id)}
-                style={{ cursor: dragging === med.id ? "grabbing" : "grab" }}
-              >
-                <circle cx={d.x} cy={d.y} r={14} fill={med.color.dot} opacity="0.2" />
-                <circle
-                  cx={d.x} cy={d.y} r={8}
-                  fill={med.color.dot}
-                  stroke={med.color.ring}
-                  strokeWidth="2.5"
-                />
-              </g>
-            ))
+            doses.map((d) => {
+              const isFree =
+                freeDose &&
+                freeDose.medId === med.id &&
+                freeDose.doseIndex === d.doseIndex;
+              return (
+                <g
+                  key={`${med.id}-${d.doseIndex}`}
+                  onMouseDown={startDragForMed(med.id, d.doseIndex)}
+                  onTouchStart={startDragForMed(med.id, d.doseIndex)}
+                  style={{ cursor: dragging === med.id ? "grabbing" : "grab" }}
+                >
+                  {/* Outer glow — bigger and brighter when in free mode */}
+                  <circle
+                    cx={d.x}
+                    cy={d.y}
+                    r={isFree ? 18 : 14}
+                    fill={med.color.dot}
+                    opacity={isFree ? 0.45 : 0.2}
+                  />
+                  {isFree && (
+                    <circle
+                      cx={d.x}
+                      cy={d.y}
+                      r={14}
+                      fill="none"
+                      stroke={med.color.dot}
+                      strokeWidth="1.5"
+                      opacity="0.7"
+                    />
+                  )}
+                  <circle
+                    cx={d.x}
+                    cy={d.y}
+                    r={8}
+                    fill={med.color.dot}
+                    stroke={med.color.ring}
+                    strokeWidth="2.5"
+                  />
+                </g>
+              );
+            })
           )}
         </svg>
       </div>
@@ -759,6 +1358,39 @@ export default function App() {
             <span className="text-lg leading-none">+</span>
             <span>Add medication</span>
           </button>
+        )}
+
+        {/* Optimize buttons + explanation */}
+        {meds.length > 0 && (
+          <div className="mt-8 flex flex-col items-center gap-2 w-full" style={{ maxWidth: "390px" }}>
+            <div className="flex gap-2 w-full">
+              <button
+                onClick={optimizeForSleep}
+                className="flex-1 flex items-center justify-center gap-2 bg-indigo-900/40 hover:bg-indigo-900/60 active:bg-indigo-900/80 border border-indigo-700 rounded-full px-3 py-1.5 text-sm text-indigo-200"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+                <span>Optimize ±10%</span>
+              </button>
+              <button
+                onClick={superOptimizeForSleep}
+                className="flex-1 flex items-center justify-center gap-2 bg-violet-900/40 hover:bg-violet-900/60 active:bg-violet-900/80 border border-violet-700 rounded-full px-3 py-1.5 text-sm text-violet-200"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                  <path d="M19 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1z" />
+                </svg>
+                <span>Optimize ±20%</span>
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400 text-center leading-relaxed px-2">
+              Arranges your doses to avoid 11 PM&ndash;5 AM and group multiple medications into the same dose times when possible. The percentage is how far each dose can shift from its evenly-spaced time.
+            </p>
+            <p className="text-[10px] text-amber-300/80 text-center leading-relaxed px-2 italic">
+              Always follow your doctor's directions when taking medication. RX Wheel is a planning aid, not medical advice.
+            </p>
+          </div>
         )}
 
         {/* Schedule summary with copy button */}
@@ -799,35 +1431,6 @@ export default function App() {
               </button>
             </>
           )}
-
-          {/* Restore from hash */}
-          <div className="mt-3">
-            <div className="text-xs text-slate-400 mb-1 px-1">Restore from code</div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={restoreInput}
-                onChange={(e) => {
-                  setRestoreInput(e.target.value);
-                  if (restoreError) setRestoreError(false);
-                }}
-                placeholder="Paste restore code"
-                className={`flex-1 min-w-0 bg-slate-800/60 border rounded-xl text-[12px] text-slate-200 font-mono px-3 py-2 outline-none ${
-                  restoreError ? "border-red-500/60" : "border-slate-700"
-                }`}
-              />
-              <button
-                onClick={handleRestore}
-                disabled={!restoreInput.trim()}
-                className="px-3 py-2 text-[12px] rounded-xl bg-emerald-600 active:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium"
-              >
-                Restore
-              </button>
-            </div>
-            {restoreError && (
-              <div className="text-[11px] text-red-400 mt-1 px-1">Invalid code</div>
-            )}
-          </div>
         </div>
 
         {/* Instructions */}
@@ -839,12 +1442,57 @@ export default function App() {
           <ul className="space-y-1.5 list-disc pl-5">
             <li>Use <span className="text-slate-200">+ / −</span> to set how many doses per day.</li>
             <li>Drag any dot on the clock to shift that medication's schedule. Times stay equally spaced and snap to 5-minute increments.</li>
+            <li>Double-tap a single dose to adjust just that one — its glow brightens. The dose can drift up to 20% of the spacing in either direction. Tap anywhere else to exit fine-tuning.</li>
             <li>Tap a medication's name to rename it.</li>
             <li>Toggle <span className="text-slate-200">12h / 24h</span> in the top right to change the time format.</li>
             <li>Swipe a medication card to the left to delete it.</li>
             <li>Tap <span className="text-slate-200">+ Add medication</span> to track another schedule on the same clock.</li>
-            <li><span className="text-slate-200">Copy</span> the schedule summary to save or share it. Paste the restore code later to rebuild your schedule exactly.</li>
+            <li>Tap <span className="text-slate-200">Optimize ±10%</span> or <span className="text-slate-200">Optimize ±20%</span> to automatically arrange every medication to avoid 11 PM &ndash; 5 AM and share dose times where possible. Higher percent allows more shifting and tighter clustering at the cost of less even spacing.</li>
+            <li><span className="text-slate-200">Copy</span> the schedule summary to save or share it. The link at the bottom opens your schedule on any device.</li>
           </ul>
+
+          {/* Pill organizer recommendations (Amazon affiliate links) */}
+          <div className="mt-6 pt-4 border-t border-slate-800">
+            <div className="text-xs text-slate-300 font-medium mb-2">Pill organizers we recommend</div>
+            <p className="text-[11px] text-slate-500 mb-2">
+              Pair your schedule with a physical organizer that matches your dosing pattern.
+            </p>
+            <ul className="space-y-1.5 list-disc pl-5">
+              <li>
+                <a
+                  href="https://amzn.to/3RaWzJX"
+                  target="_blank"
+                  rel="noopener noreferrer sponsored"
+                  className="text-cyan-400 hover:text-cyan-300 underline"
+                >
+                  Weekly pill organizer (4× per day)
+                </a>
+              </li>
+              <li>
+                <a
+                  href="https://amzn.to/4dbghOp"
+                  target="_blank"
+                  rel="noopener noreferrer sponsored"
+                  className="text-cyan-400 hover:text-cyan-300 underline"
+                >
+                  AM/PM pill case (2× per day)
+                </a>
+              </li>
+              <li>
+                <a
+                  href="https://amzn.to/4cUXvtn"
+                  target="_blank"
+                  rel="noopener noreferrer sponsored"
+                  className="text-cyan-400 hover:text-cyan-300 underline"
+                >
+                  Travel pill case
+                </a>
+              </li>
+            </ul>
+            <p className="text-[10px] text-slate-600 mt-3 leading-relaxed">
+              As an Amazon Associate, we earn from qualifying purchases. This doesn't affect the price you pay.
+            </p>
+          </div>
         </div>
       </div>
     </div>
