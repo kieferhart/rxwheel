@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-03T7W7RZKT"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-03T7W7RZKT');
+    </script>
+
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#020617" />
+
+    <title>About RX Wheel — Visual Medication Schedule Planner</title>
+    <meta name="description" content="RX Wheel was built out of frustration with the mental math of scheduling multiple medications. A visual tool for anyone planning doses around sleep and daily life." />
+    <link rel="canonical" href="https://rxwheel.com/about" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://rxwheel.com/about" />
+    <meta property="og:title" content="About RX Wheel — Visual Medication Schedule Planner" />
+    <meta property="og:description" content="RX Wheel was built out of frustration with the mental math of scheduling multiple medications. A visual tool for anyone planning doses around sleep and daily life." />
+    <meta property="og:image" content="https://rxwheel.com/og-image.png" />
+    <meta property="og:site_name" content="RX Wheel" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
+
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      body {
+        background-color: #020617;
+        color: #e2e8f0;
+        font-family: system-ui, -apple-system, sans-serif;
+        line-height: 1.7;
+        min-height: 100vh;
+      }
+
+      a { color: #818cf8; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+
+      nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1.25rem 2rem;
+        border-bottom: 1px solid #1e293b;
+        max-width: 760px;
+        margin: 0 auto;
+      }
+
+      nav .logo {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        color: #e2e8f0;
+        font-weight: 600;
+        font-size: 1.1rem;
+      }
+
+      nav .logo img {
+        height: 36px;
+        width: auto;
+      }
+
+      nav .back {
+        font-size: 0.9rem;
+        color: #6366f1;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 3rem 2rem 5rem;
+      }
+
+      h1 {
+        font-size: 2.2rem;
+        font-weight: 700;
+        color: #f8fafc;
+        margin-bottom: 1rem;
+        line-height: 1.2;
+      }
+
+      h2 {
+        font-size: 1.3rem;
+        font-weight: 600;
+        color: #f1f5f9;
+        margin-top: 2.5rem;
+        margin-bottom: 0.75rem;
+      }
+
+      p {
+        color: #94a3b8;
+        margin-bottom: 1.25rem;
+        font-size: 1.05rem;
+      }
+
+      .highlight {
+        color: #c7d2fe;
+      }
+
+      .card {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 16px;
+        padding: 1.75rem 2rem;
+        margin-top: 1.25rem;
+      }
+
+      .card p { margin-bottom: 0; }
+
+      ul {
+        list-style: none;
+        margin: 0.5rem 0 1.25rem;
+        padding: 0;
+      }
+
+      ul li {
+        color: #94a3b8;
+        font-size: 1.05rem;
+        padding: 0.3rem 0;
+        padding-left: 1.4rem;
+        position: relative;
+      }
+
+      ul li::before {
+        content: "•";
+        color: #6366f1;
+        position: absolute;
+        left: 0;
+      }
+
+      .cta {
+        display: inline-block;
+        margin-top: 2.5rem;
+        background: #6366f1;
+        color: #fff;
+        padding: 0.85rem 2rem;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 1rem;
+        transition: background 0.15s;
+      }
+
+      .cta:hover {
+        background: #4f46e5;
+        text-decoration: none;
+      }
+
+      footer {
+        text-align: center;
+        padding: 2rem;
+        color: #334155;
+        font-size: 0.85rem;
+        border-top: 1px solid #0f172a;
+      }
+
+      @media (max-width: 600px) {
+        h1 { font-size: 1.6rem; }
+        main { padding: 2rem 1.25rem 4rem; }
+        nav { padding: 1rem 1.25rem; }
+      }
+    </style>
+  </head>
+  <body>
+
+    <nav>
+      <a href="/" class="logo">
+        <img src="/favicon.png" alt="RX Wheel logo" />
+        RX Wheel
+      </a>
+      <a href="/" class="back">← Open the app</a>
+    </nav>
+
+    <main>
+      <h1>Why I built RX Wheel</h1>
+
+      <div class="card">
+        <p>After a minor back injury, I found myself managing several medications at once. Every time I tried to set a schedule I ran into the same problem: doing the mental math to space everything out evenly — while also making sure I wasn't waking up in the middle of the night to take a pill — was genuinely frustrating.</p>
+      </div>
+
+      <p style="margin-top: 1.75rem;">A spreadsheet didn't help. A standard pill schedule didn't help. What I needed was to <span class="highlight">see</span> my day as a clock — where my doses fell, how evenly they were spaced, and whether any of them crept into the hours I was trying to sleep.</p>
+
+      <p>So I built RX Wheel. A 24-hour visual clock where you can see all your medications at once, drag doses to adjust timing, and let the optimizer automatically push everything out of your sleep window.</p>
+
+      <h2>Who it's for</h2>
+
+      <ul>
+        <li>Anyone managing multiple medications and trying to keep them evenly spaced</li>
+        <li>People who want to protect their sleep and avoid middle-of-the-night doses</li>
+        <li>Caregivers coordinating schedules for a family member</li>
+        <li>Anyone who thinks visually and finds traditional pill schedules hard to reason about</li>
+      </ul>
+
+      <h2>How it works</h2>
+
+      <ul>
+        <li>Add each medication and set how many doses per day</li>
+        <li>Drag doses around the clock to find a schedule that works</li>
+        <li>Use the Optimize button to automatically avoid 11 PM – 5 AM</li>
+        <li>Export to your calendar so you never miss a dose</li>
+      </ul>
+
+      <h2>Privacy</h2>
+      <p>RX Wheel runs entirely in your browser. No account required, no data sent to any server. Your medication schedule stays on your device.</p>
+
+      <a href="/" class="cta">Try RX Wheel →</a>
+    </main>
+
+    <footer>
+      &copy; 2025 RX Wheel &mdash; <a href="/">rxwheel.com</a>
+    </footer>
+
+  </body>
+</html>
