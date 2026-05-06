@@ -1388,7 +1388,7 @@ export default function App() {
               Arranges your doses to avoid 11 PM&ndash;5 AM and group multiple medications into the same dose times when possible. The percentage is how far each dose can shift from its evenly-spaced time.
             </p>
             <p className="text-[10px] text-amber-300/80 text-center leading-relaxed px-2 italic">
-              Always follow your doctor's directions when taking medication. RX Wheel is a planning aid, not medical advice.
+              RX Wheel is for planning purposes only and is not medical advice. Always consult your doctor or pharmacist before changing your medication schedule. Use at your own risk.
             </p>
           </div>
         )}
