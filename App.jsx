@@ -1494,6 +1494,16 @@ export default function App() {
             </p>
           </div>
         </div>
+
+        {/* Footer */}
+        <div className="mt-8 mb-2 text-center">
+          <a
+            href="/about"
+            className="text-xs text-slate-500 hover:text-slate-300 underline"
+          >
+            About RX Wheel
+          </a>
+        </div>
       </div>
     </div>
   );
