@@ -1,21 +1,47 @@
 import { useState, useRef, useEffect } from "react";
 
 const MED_COLORS = [
-  { name: "cyan", dot: "#22d3ee", ring: "#0e7490", chip: "cyan" },
-  { name: "rose", dot: "#fb7185", ring: "#9f1239", chip: "rose" },
-  { name: "lime", dot: "#a3e635", ring: "#3f6212", chip: "lime" },
-  { name: "violet", dot: "#c084fc", ring: "#6b21a8", chip: "violet" },
-  { name: "orange", dot: "#fb923c", ring: "#9a3412", chip: "orange" },
+  { name: "red",      dot: "#e6194b", ring: "#8b0020" },
+  { name: "green",    dot: "#3cb44b", ring: "#1a5c26" },
+  { name: "yellow",   dot: "#ffe119", ring: "#8a7300" },
+  { name: "blue",     dot: "#4363d8", ring: "#1e3a9e" },
+  { name: "orange",   dot: "#f58231", ring: "#854000" },
+  // Extended palette — unlocked in Advanced Mode
+  { name: "purple",   dot: "#911eb4", ring: "#500d65" },
+  { name: "cyan",     dot: "#42d4f4", ring: "#0e6e7e" },
+  { name: "magenta",  dot: "#f032e6", ring: "#820080" },
+  { name: "lime",     dot: "#bfef45", ring: "#637d00" },
+  { name: "pink",     dot: "#fabed4", ring: "#9e3a5a" },
+  { name: "teal",     dot: "#469990", ring: "#1b4d4a" },
+  { name: "lavender", dot: "#dcbeff", ring: "#6b3bb5" },
+  { name: "brown",    dot: "#9a6324", ring: "#4a2d0a" },
+  { name: "beige",    dot: "#fffac8", ring: "#8a7a00" },
+  { name: "maroon",   dot: "#800000", ring: "#cc0000" },
+  { name: "mint",     dot: "#aaffc3", ring: "#2d6e47" },
+  { name: "olive",    dot: "#808000", ring: "#b0b000" },
+  { name: "apricot",  dot: "#ffd8b1", ring: "#9e5010" },
+  { name: "navy",     dot: "#000075", ring: "#1515c0" },
+  { name: "grey",     dot: "#a9a9a9", ring: "#505050" },
 ];
+
+const MAX_MEDS_STANDARD = 5;
+const MAX_MEDS_ADVANCED = MED_COLORS.length;
+
+const DAYS_OF_WEEK = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const ICS_BYDAY   = ["SU","MO","TU","WE","TH","FR","SA"];
 
 let nextId = 1;
 const newMed = (i = 0) => ({
   id: nextId++,
   count: 3,
-  offset: 8 + i * 1.5, // stagger initial offsets so dots don't overlap
+  offset: 8 + i * 1.5,
   color: MED_COLORS[i % MED_COLORS.length],
   name: `Medication ${i + 1}`,
-  doseOffsets: [0, 0, 0], // per-dose drift in hours; constrained so adjacent gaps stay within ±20%
+  doseOffsets: [0, 0, 0],
+  description: "",
+  frequencyType: "daily",   // "daily" | "weekly"
+  weeklyDay: 1,             // 0=Sun … 6=Sat
+  preferredWindow: "any",   // "any" | "morning" | "evening"
 });
 
 // Maximum drift constraint: any two consecutive doses' gap must stay within ±20% of equal spacing
@@ -24,7 +50,7 @@ const GAP_TOLERANCE = 0.2;
 const DELETE_THRESHOLD = 105; // pixels swiped left before delete triggers
 
 
-function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, updateMed, removeMed, canDelete }) {
+function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, updateMed, removeMed, canDelete, advancedMode, medIndex }) {
   const [offsetX, setOffsetX] = useState(0);
   const startX = useRef(null);
   const dragging = useRef(false);
@@ -36,7 +62,7 @@ function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, update
   };
 
   const handlePointerDown = (e) => {
-    if (e.target.closest("button")) return;
+    if (e.target.closest("button") || e.target.closest("input")) return;
     const point = e.touches ? e.touches[0] : e;
     startX.current = point.clientX;
     dragging.current = true;
@@ -67,12 +93,24 @@ function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, update
   const willDelete = offsetX <= -DELETE_THRESHOLD;
   const revealAmount = Math.min(-offsetX, 200);
 
+  const isWeekly = med.frequencyType === "weekly";
+  const freqLabel = isWeekly
+    ? `Weekly · ${DAYS_OF_WEEK[med.weeklyDay ?? 1]}`
+    : formatSpacing(spacing);
+
+  const setPreferredWindow = (val) => {
+    const patch = { preferredWindow: val };
+    if (val === "morning") patch.offset = 8;
+    else if (val === "evening") patch.offset = 20;
+    updateMed(med.id, patch);
+  };
+
   return (
     <div
       className="relative rounded-2xl overflow-hidden"
       style={{ width: "390px", maxWidth: "92vw" }}
     >
-      {/* Trash icon revealed behind the pill (no background) */}
+      {/* Trash icon revealed on swipe */}
       <div
         className="absolute inset-0 flex items-center justify-end pr-5 pointer-events-none"
         style={{
@@ -89,7 +127,7 @@ function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, update
         </svg>
       </div>
 
-      {/* The pill itself, slides left over the red zone */}
+      {/* Card content */}
       <div
         onMouseDown={handlePointerDown}
         onMouseMove={handlePointerMove}
@@ -109,44 +147,82 @@ function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, update
           touchAction: "pan-y",
         }}
       >
-        {/* Name input */}
-        <input
-          type="text"
-          value={med.name}
-          onChange={(e) => updateMed(med.id, { name: e.target.value })}
-          onMouseDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          placeholder="Medication name"
-          className="text-[13px] font-medium bg-transparent border-none outline-none w-full"
-          style={{
-            color: med.color.dot,
-          }}
-        />
+        {/* Name row: input on left, number badge on right */}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={med.name}
+            onChange={(e) => updateMed(med.id, { name: e.target.value })}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            placeholder="Medication name"
+            className="text-[13px] font-medium bg-transparent border-none outline-none flex-1 min-w-0"
+            style={{ color: med.color.dot }}
+          />
+          <svg width="20" height="20" viewBox="-10 -10 20 20" style={{ flexShrink: 0 }}>
+            <circle cx="0" cy="0" r="8" fill={med.color.dot} stroke={med.color.ring} strokeWidth="2.5" />
+            <text
+              x="0" y="0"
+              fill="white"
+              fontSize={medIndex + 1 >= 10 ? "6" : "8"}
+              fontWeight="800"
+              textAnchor="middle"
+              dominantBaseline="middle"
+              stroke={med.color.ring}
+              strokeWidth="1.2"
+              paintOrder="stroke"
+              style={{ pointerEvents: "none", userSelect: "none" }}
+            >
+              {medIndex + 1}
+            </text>
+          </svg>
+        </div>
+
+        {/* Description — advanced mode only */}
+        {advancedMode && (
+          <input
+            type="text"
+            value={med.description || ""}
+            onChange={(e) => updateMed(med.id, { description: e.target.value })}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            placeholder='Purpose e.g. "Lower Blood Pressure"'
+            className="text-[11px] bg-transparent border-b outline-none w-full pb-0.5"
+            style={{ color: "#94a3b8", borderColor: `${med.color.dot}33` }}
+          />
+        )}
 
         {/* Row: controls + chips */}
         <div className="flex items-start gap-2">
-          {/* Left side: count controls + frequency */}
+          {/* Left: count + spacing */}
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => updateMed(med.id, { count: Math.max(1, med.count - 1) })}
-              className="w-6 h-6 shrink-0 rounded-full bg-slate-700 active:bg-slate-500 flex items-center justify-center text-sm font-light"
-            >
-              −
-            </button>
-            <span className="text-[13px] font-medium shrink-0 tabular-nums">{med.count}×</span>
-            <button
-              onClick={() => updateMed(med.id, { count: Math.min(24, med.count + 1) })}
-              className="w-6 h-6 shrink-0 rounded-full bg-slate-700 active:bg-slate-500 flex items-center justify-center text-sm font-light"
-            >
-              +
-            </button>
+            {!isWeekly && (
+              <>
+                <button
+                  onClick={() => updateMed(med.id, { count: Math.max(1, med.count - 1) })}
+                  className="w-6 h-6 shrink-0 rounded-full bg-slate-700 active:bg-slate-500 flex items-center justify-center text-sm font-light"
+                >
+                  −
+                </button>
+                <span className="text-[13px] font-medium shrink-0 tabular-nums">{med.count}×</span>
+                <button
+                  onClick={() => updateMed(med.id, { count: Math.min(24, med.count + 1) })}
+                  className="w-6 h-6 shrink-0 rounded-full bg-slate-700 active:bg-slate-500 flex items-center justify-center text-sm font-light"
+                >
+                  +
+                </button>
+              </>
+            )}
+            {isWeekly && (
+              <span className="text-[13px] font-medium shrink-0 text-slate-300">1×</span>
+            )}
             <span className="text-[13px] text-slate-400 shrink-0 tabular-nums whitespace-nowrap">
-              {formatSpacing(spacing)}
+              {freqLabel}
             </span>
             <div className="w-px h-5 bg-slate-700 shrink-0" />
           </div>
 
-          {/* Right side: chips in a 3-column grid */}
+          {/* Right: dose chips */}
           <div className="grid grid-cols-3 gap-1 flex-1 min-w-0 pt-0.5">
             {doses.map((d, i) => (
               <span
@@ -162,6 +238,84 @@ function MedRow({ med, doses, spacing, hour12, formatHour, formatSpacing, update
             ))}
           </div>
         </div>
+
+        {/* Advanced mode extra controls */}
+        {advancedMode && (
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t" style={{ borderColor: `${med.color.dot}22` }}>
+
+            {/* Daily / Weekly toggle */}
+            <div className="flex rounded overflow-hidden border border-slate-700 text-[11px]">
+              {["daily","weekly"].map((type) => (
+                <button
+                  key={type}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                  onClick={() => {
+                    if (type === "weekly") {
+                      updateMed(med.id, { frequencyType: "weekly", count: 1, doseOffsets: [0] });
+                    } else {
+                      updateMed(med.id, { frequencyType: "daily" });
+                    }
+                  }}
+                  className={`px-2 py-0.5 capitalize transition-colors ${
+                    (med.frequencyType || "daily") === type
+                      ? "text-white"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                  style={(med.frequencyType || "daily") === type ? { backgroundColor: `${med.color.dot}55` } : {}}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+
+            {/* Day-of-week picker — weekly only */}
+            {isWeekly && (
+              <div className="flex gap-0.5">
+                {["S","M","T","W","T","F","S"].map((d, i) => (
+                  <button
+                    key={i}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onClick={() => updateMed(med.id, { weeklyDay: i })}
+                    className={`w-5 h-5 text-[9px] rounded flex items-center justify-center transition-colors ${
+                      (med.weeklyDay ?? 1) === i ? "text-white font-bold" : "bg-slate-700/50 text-slate-400"
+                    }`}
+                    style={(med.weeklyDay ?? 1) === i ? { backgroundColor: `${med.color.dot}88` } : {}}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Preferred time window — daily only */}
+            {!isWeekly && (
+              <div className="flex rounded overflow-hidden border border-slate-700 text-[11px]">
+                {[
+                  { val: "morning", label: "Morning" },
+                  { val: "evening", label: "Evening" },
+                  { val: "any",     label: "Any time" },
+                ].map(({ val, label }) => (
+                  <button
+                    key={val}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onClick={() => setPreferredWindow(val)}
+                    className={`px-2 py-0.5 transition-colors ${
+                      (med.preferredWindow || "any") === val
+                        ? "text-white"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                    style={(med.preferredWindow || "any") === val ? { backgroundColor: `${med.color.dot}55` } : {}}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -184,12 +338,15 @@ export default function App() {
     }
   };
   const [hour12, setHour12] = useState(true);
+  const [showBothTimes, setShowBothTimes] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(false);
+  const [showNamesOnWheel, setShowNamesOnWheel] = useState(true);
   const svgRef = useRef(null);
 
   const size = 440;
   const center = size / 2;
   const outerR = 150;
-  const innerR = 110;
+  const legendWidth = 170; // extra SVG space to the right for the key
   const tickOuter = 148;
   const tickInner = 138;
   const labelR = 174;
@@ -197,20 +354,75 @@ export default function App() {
   const DAY_START = 6;
   const DAY_END = 18;
 
-  // Distribute medications across the colored band:
-  // 1 med → centered. 2 meds → outer + inner. 3 meds → outer, middle, inner. 4+ → evenly spaced.
+  const MAX_RINGS = 5;
+
+  // Greedy ring assignment: prefer ring idx % MAX_RINGS, cycle through all 5,
+  // then spill onto a new ring beyond MAX_RINGS only if every existing ring collides.
+  // Uses a fixed threshold (~28 min) so it runs before geometry is known.
+  const ringAssignments = (() => {
+    const ringHours = [];
+    const thresh = 18 / 145 * 24 / (2 * Math.PI);
+    const collides = (ringIdx, hours) =>
+      hours.some(h =>
+        (ringHours[ringIdx] || []).some(eh => Math.min(Math.abs(h - eh), 24 - Math.abs(h - eh)) < thresh)
+      );
+    return meds.map((med, idx) => {
+      const spacing = 24 / med.count;
+      const offsets = med.doseOffsets || new Array(med.count).fill(0);
+      const hours = Array.from({ length: med.count }, (_, i) =>
+        ((Math.round((i * spacing + med.offset + (offsets[i] || 0)) * 12) / 12) % 24 + 24) % 24
+      );
+      const preferred = idx % MAX_RINGS;
+      let assigned = -1;
+      for (let offset = 0; ; offset++) {
+        const candidate = offset < MAX_RINGS
+          ? (preferred + offset) % MAX_RINGS
+          : MAX_RINGS + (offset - MAX_RINGS);
+        if (candidate >= ringHours.length || !collides(candidate, hours)) {
+          assigned = candidate; break;
+        }
+      }
+      if (!ringHours[assigned]) ringHours[assigned] = [];
+      hours.forEach(h => ringHours[assigned].push(h));
+      return assigned;
+    });
+  })();
+
+  const ringCount = meds.length === 0 ? 1 : Math.max(...ringAssignments) + 1;
+
+  // Geometry always uses dotR=8 so every ring has enough physical space.
+  const dotR = 8;
+  const glowR = dotR + 6;
+  const bandOuter = 145;
+  const ringSpacing = 2 * dotR + 2; // 18
+  const bandInner = Math.max(bandOuter - (Math.max(ringCount, 3) - 1) * ringSpacing, 50);
+  const innerR = Math.max(bandInner - dotR - 4, 46);
+
   const computeRingRadii = (count) => {
-    const bandOuter = 145; // just inside outerR (150)
-    const bandInner = 115; // just outside innerR (110)
-    const bandCenter = (bandOuter + bandInner) / 2;
-    if (count <= 1) return [bandCenter];
-    if (count === 2) return [bandOuter, bandInner];
-    if (count === 3) return [bandOuter, bandCenter, bandInner];
-    // 4+ evenly spaced from outer to inner
+    if (count <= 1) return [(bandOuter + bandInner) / 2];
     const step = (bandOuter - bandInner) / (count - 1);
     return Array.from({ length: count }, (_, i) => bandOuter - i * step);
   };
-  const ringRadii = computeRingRadii(meds.length);
+  const ringRadii = computeRingRadii(ringCount);
+
+  // Per-med dot size: two constraints applied together so all colliding dots
+  // shrink equally.
+  //
+  // 1. Ring-crowding: if 5+ meds share a ring, all get an equal reduction.
+  const medsPerRing = Array(ringCount).fill(0);
+  ringAssignments.forEach(ri => medsPerRing[ri]++);
+  const slotDotR = (n) => n < 5 ? 8 : n === 5 ? 7 : n === 6 ? 6 : 5;
+  //
+  // 2. Stacking cap: when ringCount > 6, adjacent rings are closer than 2*dotR
+  //    so dots at the same clock position visually collide across rings. Cap every
+  //    dot at the max radius that actually fits in the ring step.
+  const ringStep = ringCount <= 1 ? 18 : (bandOuter - bandInner) / (ringCount - 1);
+  const stackCap = Math.min(8, Math.max(4, ringStep / 2));
+  //
+  const medDotSizes = ringAssignments.map(ri => Math.min(slotDotR(medsPerRing[ri]), stackCap));
+
+  // Hide per-med guide rings for large schedules (they'd clutter the wheel)
+  const showGuideRings = meds.length <= 7;
 
   const hourToAngle = (h) => (h / 24) * 2 * Math.PI - Math.PI / 2;
 
@@ -230,9 +442,11 @@ export default function App() {
     return `M ${x1o} ${y1o} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x2o} ${y2o} L ${x2i} ${y2i} A ${rInner} ${rInner} 0 ${largeArc} 0 ${x1i} ${y1i} Z`;
   };
 
+  const svgViewW = size;
+
   const pointerToHours = (clientX, clientY) => {
     const rect = svgRef.current.getBoundingClientRect();
-    const scale = rect.width / size;
+    const scale = rect.width / svgViewW;
     const x = clientX - rect.left - center * scale;
     const y = clientY - rect.top - center * scale;
     let angle = Math.atan2(y, x) + Math.PI / 2;
@@ -412,9 +626,9 @@ export default function App() {
   }, [dragging, freeDose, meds]);
 
   // Compute doses for each med
-  const medDoses = meds.map((med, idx) => {
+  const medDoses = meds.map((med, idx) => { // idx is the 0-based position in the list
     const spacing = 24 / med.count;
-    const r = ringRadii[idx];
+    const r = ringRadii[ringAssignments[idx]];
     const offsets = med.doseOffsets || new Array(med.count).fill(0);
     const doses = Array.from({ length: med.count }, (_, i) => {
       const driftedH = i * spacing + med.offset + (offsets[i] || 0);
@@ -430,10 +644,30 @@ export default function App() {
         isDay: h >= DAY_START && h < DAY_END,
       };
     }).sort((a, b) => a.h - b.h);
-    return { med, doses, ringR: r, spacing };
+    const dR = medDotSizes[idx];
+    const gR = dR + 6;
+    return { med, doses, ringR: r, spacing, medIdx: idx, dR, gR };
   });
 
+  // For each med: the dose dot with the largest X coordinate (rightmost on the wheel)
+  const rightmostDoses = medDoses.map(({ med, doses }) => ({
+    med,
+    dot: doses.reduce((best, d) => d.x > best.x ? d : best, doses[0]),
+  }));
+
+  // Sort legend entries by the dot's Y position (top → bottom) so connector
+  // lines are ordered the same way on both sides — this eliminates crossings.
+  const sortedLegend = [...rightmostDoses].sort((a, b) => a.dot.y - b.dot.y);
+
+  // Legend layout — vertically centered in the SVG
+  const legendX      = size + 14;
+  const legendItemH  = Math.max(15, Math.min(30, (size - 60) / Math.max(meds.length, 1)));
+  const legendStartY = (size - (meds.length - 1) * legendItemH) / 2;
+
   const hourLabels = Array.from({ length: 24 }, (_, i) => i);
+
+  // In basic mode always use 12h; in advanced mode respect the toggle
+  const effectiveHour12 = !advancedMode ? true : hour12;
 
   const formatHour = (h) => {
     let hours = Math.floor(h);
@@ -443,7 +677,7 @@ export default function App() {
       hours = (hours + 1) % 24;
       m = 0;
     }
-    if (hour12) {
+    if (effectiveHour12) {
       const suffix = hours < 12 ? "AM" : "PM";
       let h12 = hours % 12;
       if (h12 === 0) h12 = 12;
@@ -473,7 +707,7 @@ export default function App() {
       hours = (hours + 1) % 24;
       m = 0;
     }
-    if (hour12) {
+    if (effectiveHour12) {
       const suffix = hours < 12 ? "AM" : "PM";
       let h12 = hours % 12;
       if (h12 === 0) h12 = 12;
@@ -482,16 +716,26 @@ export default function App() {
     return `${hours.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
   };
 
-  // Encode meds to a compact hash for restoration. Each med = "name|count|offset|colorIdx"
+  // Encode meds to a compact hash for restoration.
+  // Format (v2): [name, count, offset, colorIdx, doseOffsets, description, frequencyType, weeklyDay, preferredWindow]
   const encodeHash = () => {
     const data = meds.map((m) => {
       const colorIdx = MED_COLORS.findIndex((c) => c.name === m.color.name);
       const offsets = (m.doseOffsets || new Array(m.count).fill(0))
         .map((d) => Math.round((d || 0) * 60) / 60);
-      return [m.name, m.count, Math.round(m.offset * 60) / 60, colorIdx, offsets];
+      return [
+        m.name,
+        m.count,
+        Math.round(m.offset * 60) / 60,
+        colorIdx,
+        offsets,
+        m.description || "",
+        m.frequencyType || "daily",
+        m.weeklyDay ?? 1,
+        m.preferredWindow || "any",
+      ];
     });
     const json = JSON.stringify(data);
-    // URL-safe base64: replace +,/ with -,_ and strip = padding so it can live cleanly in a URL.
     return btoa(unescape(encodeURIComponent(json)))
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
@@ -501,13 +745,13 @@ export default function App() {
   const decodeHash = (hash) => {
     try {
       let s = hash.trim();
-      // Convert URL-safe base64 back to standard base64 and re-pad
       s = s.replace(/-/g, "+").replace(/_/g, "/");
       while (s.length % 4) s += "=";
       const json = decodeURIComponent(escape(atob(s)));
       const data = JSON.parse(json);
       if (!Array.isArray(data)) return null;
-      return data.map(([name, count, offset, colorIdx, doseOffsets], i) => {
+      return data.map((entry, i) => {
+        const [name, count, offset, colorIdx, doseOffsets, description, frequencyType, weeklyDay, preferredWindow] = entry;
         const c = Math.max(1, Math.min(24, parseInt(count, 10) || 3));
         const offsets = Array.isArray(doseOffsets) && doseOffsets.length === c
           ? doseOffsets.map((d) => Number(d) || 0)
@@ -519,6 +763,10 @@ export default function App() {
           offset: ((Number(offset) || 0) % 24 + 24) % 24,
           color: MED_COLORS[colorIdx] || MED_COLORS[i % MED_COLORS.length],
           doseOffsets: offsets,
+          description: typeof description === "string" ? description : "",
+          frequencyType: frequencyType === "weekly" ? "weekly" : "daily",
+          weeklyDay: typeof weeklyDay === "number" ? weeklyDay : 1,
+          preferredWindow: ["morning","evening","any"].includes(preferredWindow) ? preferredWindow : "any",
         };
       });
     } catch {
@@ -560,8 +808,14 @@ export default function App() {
   // Build the schedule summary text (with shareable link at the end)
   const summaryText = "Your medication schedule made with RXwheel.com\n\n" + medDoses
     .map(({ med, doses, spacing }) => {
+      const descLine = med.description ? `  "${med.description}"\n` : "";
+      const isWeekly = med.frequencyType === "weekly";
+      const freqLine = isWeekly
+        ? `  1× per week (${DAYS_OF_WEEK[med.weeklyDay ?? 1]})`
+        : `  ${med.count}× per day, every ${formatSpacing(spacing)}`;
+      const timesLabel = isWeekly ? "Time" : "Times";
       const times = doses.map((d) => formatHourText(d.h)).join(", ");
-      return `${med.name}\n  ${med.count}× per day, every ${formatSpacing(spacing)}\n  Times: ${times}`;
+      return `${med.name}\n${descLine}${freqLine}\n  ${timesLabel}: ${times}`;
     })
     .join("\n\n") + `\n\n— Open or edit this schedule —\n${shareUrl}`;
 
@@ -630,15 +884,19 @@ export default function App() {
         const uid = `rxwheel-${med.id}-${i}-${Date.now()}@rxwheel`;
         const safeName = (med.name || "Medication").replace(/[\\,;]/g, " ");
 
+        const rrule = med.frequencyType === "weekly"
+          ? `RRULE:FREQ=WEEKLY;BYDAY=${ICS_BYDAY[med.weeklyDay ?? 1]}`
+          : "RRULE:FREQ=DAILY";
+        const descSuffix = med.description ? ` (${med.description})` : "";
         lines.push(
           "BEGIN:VEVENT",
           `UID:${uid}`,
           `DTSTAMP:${stamp}`,
           `DTSTART;TZID=${tz}:${dtStart}`,
           `DTEND;TZID=${tz}:${dtEnd}`,
-          "RRULE:FREQ=DAILY",
+          rrule,
           `SUMMARY:Take ${safeName}`,
-          `DESCRIPTION:RX Wheel scheduled dose`,
+          `DESCRIPTION:RX Wheel scheduled dose${descSuffix}`,
           "BEGIN:VALARM",
           "TRIGGER:-PT0M",
           "ACTION:DISPLAY",
@@ -687,12 +945,17 @@ export default function App() {
   };
 
   const addMed = () => {
-    if (meds.length >= MED_COLORS.length) return;
+    const maxMeds = advancedMode ? MAX_MEDS_ADVANCED : MAX_MEDS_STANDARD;
+    if (meds.length >= maxMeds) return;
     setMeds((prev) => {
-      // pick the first color not currently in use
       const used = new Set(prev.map((m) => m.color.name));
-      const color = MED_COLORS.find((c) => !used.has(c.name)) || MED_COLORS[prev.length];
-      return [...prev, { id: nextId++, count: 3, offset: 8 + prev.length * 1.5, color, name: `Medication ${prev.length + 1}`, doseOffsets: [0, 0, 0] }];
+      const color = MED_COLORS.find((c) => !used.has(c.name)) || MED_COLORS[prev.length % MED_COLORS.length];
+      return [...prev, {
+        id: nextId++, count: 3, offset: 8 + prev.length * 1.5,
+        color, name: `Medication ${prev.length + 1}`,
+        doseOffsets: [0, 0, 0],
+        description: "", frequencyType: "daily", weeklyDay: 1, preferredWindow: "any",
+      }];
     });
   };
 
@@ -1097,26 +1360,25 @@ export default function App() {
 
   return (
     <div className="relative flex flex-col items-center min-h-screen bg-slate-950 text-slate-100 pt-16 pb-6 px-3 select-none">
-      {/* Top-right sliding 12/24h toggle */}
-      <div className="absolute top-4 right-4 flex items-center gap-2">
-        <span className={`text-xs font-semibold transition-colors ${hour12 ? "text-emerald-400" : "text-slate-500"}`}>
-          12h
-        </span>
+      {/* Top-right controls: Advanced Mode */}
+      <div className="absolute top-4 right-4 flex items-center gap-3">
+        {/* Advanced Mode toggle */}
         <button
-          onClick={() => setHour12(!hour12)}
-          aria-label="Toggle 12 or 24 hour time"
-          role="switch"
-          aria-checked={hour12}
-          className="relative bg-slate-700 rounded-full h-7 w-12 shadow-inner"
+          onClick={() => setAdvancedMode((v) => !v)}
+          aria-label="Toggle Advanced Mode"
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-semibold transition-colors ${
+            advancedMode
+              ? "bg-violet-900/60 border-violet-500/60 text-violet-200"
+              : "bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-300"
+          }`}
         >
-          <span
-            className="absolute top-0.5 h-6 w-6 rounded-full bg-emerald-500 shadow transition-all duration-200 ease-out"
-            style={hour12 ? { left: "2px" } : { left: "calc(100% - 26px)" }}
-          />
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+            <path d="M4.93 4.93a10 10 0 0 0 0 14.14" />
+          </svg>
+          Advanced
         </button>
-        <span className={`text-xs font-semibold transition-colors ${!hour12 ? "text-emerald-400" : "text-slate-500"}`}>
-          24h
-        </span>
       </div>
 
       {/* RX Wheel logo */}
@@ -1127,11 +1389,12 @@ export default function App() {
       />
       <p className="text-xs text-slate-400 mb-4">Drag a dose to shift the schedule</p>
 
-      <div className="mb-4 w-full max-w-[400px] px-2">
+      <div className="mb-4 w-full max-w-[308px] md:max-w-[462px] px-1">
         <svg
           ref={svgRef}
           viewBox={`0 0 ${size} ${size}`}
           className="touch-none w-full h-auto"
+          style={{ overflow: "visible" }}
           onMouseDown={handleBgTap}
           onTouchStart={handleBgTap}
         >
@@ -1199,8 +1462,8 @@ export default function App() {
             );
           })}
 
-          {/* Inner labels: 24h numbers when in 12h mode, AM/PM when in 24h mode */}
-          {hourLabels.map((h) => {
+          {/* Inner labels: shown in Advanced Mode when dual-time is enabled */}
+          {advancedMode && showBothTimes && hourLabels.map((h) => {
             const a = hourToAngle(h);
             const isMajor = h % 6 === 0;
             const lx = center + (innerR - 14) * Math.cos(a);
@@ -1229,14 +1492,15 @@ export default function App() {
             );
           })}
 
-          {/* Outer labels: AM/PM when in 12h mode, 24h numbers when in 24h mode */}
+          {/* Outer labels: always 12h in basic mode; respects hour12 toggle in Advanced Mode */}
           {hourLabels.map((h) => {
             const a = hourToAngle(h);
             const x = center + labelR * Math.cos(a);
             const y = center + labelR * Math.sin(a);
             const isDayLabel = h > DAY_START && h < DAY_END;
+            const use12 = !advancedMode || hour12;
             let label;
-            if (hour12) {
+            if (use12) {
               if (h === 0) label = "12\u2009AM";
               else if (h === 12) label = "12\u2009PM";
               else if (h < 12) label = `${h}\u2009AM`;
@@ -1250,7 +1514,7 @@ export default function App() {
                 key={`outer-${h}`}
                 x={x} y={y}
                 fill={isDayLabel ? "#fbbf24" : "#a5b4fc"}
-                fontSize={hour12 ? (isMajor ? 14 : 12) : (isMajor ? 18 : 16)}
+                fontSize={use12 ? (isMajor ? 14 : 12) : (isMajor ? 18 : 16)}
                 fontWeight={isMajor ? 700 : 500}
                 opacity={isMajor ? 1 : 0.9}
                 textAnchor="middle"
@@ -1271,8 +1535,8 @@ export default function App() {
             preserveAspectRatio="xMidYMid meet"
           />
 
-          {/* Faint guide ring per medication */}
-          {medDoses.map(({ med, ringR }) => (
+          {/* Faint guide ring per medication — hidden when many meds would clutter */}
+          {showGuideRings && medDoses.map(({ med, ringR }) => (
             <circle
               key={`guide-${med.id}`}
               cx={center} cy={center} r={ringR}
@@ -1285,7 +1549,7 @@ export default function App() {
           ))}
 
           {/* Dots per medication */}
-          {medDoses.map(({ med, doses }) =>
+          {medDoses.map(({ med, doses, ringR, medIdx, dR, gR }) =>
             doses.map((d) => {
               const isFree =
                 freeDose &&
@@ -1298,11 +1562,11 @@ export default function App() {
                   onTouchStart={startDragForMed(med.id, d.doseIndex)}
                   style={{ cursor: dragging === med.id ? "grabbing" : "grab" }}
                 >
-                  {/* Outer glow — bigger and brighter when in free mode */}
+                  {/* Outer glow */}
                   <circle
                     cx={d.x}
                     cy={d.y}
-                    r={isFree ? 18 : 14}
+                    r={isFree ? gR + 4 : gR}
                     fill={med.color.dot}
                     opacity={isFree ? 0.45 : 0.2}
                   />
@@ -1310,7 +1574,7 @@ export default function App() {
                     <circle
                       cx={d.x}
                       cy={d.y}
-                      r={14}
+                      r={gR}
                       fill="none"
                       stroke={med.color.dot}
                       strokeWidth="1.5"
@@ -1320,37 +1584,113 @@ export default function App() {
                   <circle
                     cx={d.x}
                     cy={d.y}
-                    r={8}
+                    r={dR}
                     fill={med.color.dot}
                     stroke={med.color.ring}
-                    strokeWidth="2.5"
+                    strokeWidth={dR >= 7 ? 2.5 : 2}
                   />
+                  {/* Number label inside the dot */}
+                  <text
+                    x={d.x}
+                    y={d.y}
+                    fill="white"
+                    fontSize={medIdx + 1 >= 10 ? Math.max(5, dR) : Math.max(6, dR + 2)}
+                    fontWeight="800"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    stroke={med.color.ring}
+                    strokeWidth="1.2"
+                    paintOrder="stroke"
+                    style={{ pointerEvents: "none", userSelect: "none" }}
+                  >
+                    {medIdx + 1}
+                  </text>
                 </g>
               );
             })
           )}
+
+          {/* ── Key: connector lines — sorted by dot.y so lines don't cross ── */}
+          {meds.length >= 2 && showNamesOnWheel && sortedLegend.map(({ med, dot }, i) => {
+            const ly = legendStartY + i * legendItemH;
+            const cp1x = dot.x + Math.max(30, (legendX - dot.x) * 0.45);
+            const cp2x = legendX - 20;
+            return (
+              <path
+                key={`conn-${med.id}`}
+                d={`M ${dot.x} ${dot.y} C ${cp1x} ${dot.y} ${cp2x} ${ly} ${legendX} ${ly}`}
+                fill="none"
+                stroke={med.color.dot}
+                strokeWidth="1"
+                opacity="0.4"
+                style={{ pointerEvents: "none" }}
+              />
+            );
+          })}
+
+          {/* ── Key: legend entries — same sort order as connector lines ── */}
+          {meds.length >= 2 && showNamesOnWheel && sortedLegend.map(({ med }, i) => {
+            const ly = legendStartY + i * legendItemH;
+            const name = med.name.length > 14 ? med.name.slice(0, 13) + "…" : med.name;
+            const medIdx = meds.findIndex(m => m.id === med.id);
+            const dotCx = legendX + dotR;
+            return (
+              <g key={`leg-${med.id}`} style={{ pointerEvents: "none" }}>
+                {/* Dot — identical style to wheel dots */}
+                <circle cx={dotCx} cy={ly} r={dotR} fill={med.color.dot} stroke={med.color.ring} strokeWidth={dotR >= 7 ? 2.5 : 2} />
+                <text
+                  x={dotCx} y={ly}
+                  fill="white"
+                  fontSize={medIdx + 1 >= 10 ? Math.max(5, dotR) : Math.max(6, dotR + 2)}
+                  fontWeight="800"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  stroke={med.color.ring}
+                  strokeWidth="1.2"
+                  paintOrder="stroke"
+                  style={{ userSelect: "none" }}
+                >
+                  {medIdx + 1}
+                </text>
+                {/* Name — same font size as med card name (13px CSS ≈ 12.6 SVG units) */}
+                <text
+                  x={dotCx + dotR + 5}
+                  y={ly}
+                  fill={med.color.dot}
+                  fontSize="12.6"
+                  fontWeight="500"
+                  dominantBaseline="middle"
+                  style={{ userSelect: "none" }}
+                >
+                  {name}
+                </text>
+              </g>
+            );
+          })}
         </svg>
       </div>
 
       {/* One pill row per medication */}
       <div className="flex flex-col items-center gap-2 w-full">
-        {medDoses.map(({ med, doses, spacing }) => (
+        {medDoses.map(({ med, doses, spacing, medIdx }) => (
           <MedRow
             key={med.id}
             med={med}
             doses={doses}
             spacing={spacing}
-            hour12={hour12}
+            hour12={!advancedMode ? true : hour12}
             formatHour={formatHour}
             formatSpacing={formatSpacing}
             updateMed={updateMed}
             removeMed={removeMed}
             canDelete={meds.length > 1}
+            advancedMode={advancedMode}
+            medIndex={medIdx}
           />
         ))}
 
         {/* Add medication button */}
-        {meds.length < MED_COLORS.length && (
+        {meds.length < (advancedMode ? MAX_MEDS_ADVANCED : MAX_MEDS_STANDARD) && (
           <button
             onClick={addMed}
             className="flex items-center gap-2 bg-slate-800/60 hover:bg-slate-800 active:bg-slate-700 border border-dashed border-slate-600 rounded-full px-4 py-1.5 text-sm text-slate-300"
@@ -1358,6 +1698,89 @@ export default function App() {
             <span className="text-lg leading-none">+</span>
             <span>Add medication</span>
           </button>
+        )}
+
+        {/* Advanced Mode panel */}
+        {advancedMode && (
+          <div
+            className="mt-2 w-full rounded-2xl px-4 py-3 flex flex-col gap-2.5"
+            style={{ width: "390px", maxWidth: "92vw", backgroundColor: "#2e1d4e55", border: "1px solid #7c3aed44" }}
+          >
+            <div className="flex items-center gap-2 text-xs text-violet-300 font-semibold">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /><path d="M4.93 4.93a10 10 0 0 0 0 14.14" />
+              </svg>
+              Advanced Mode
+              <span className="ml-auto text-violet-400/60 font-normal">{meds.length} / {MAX_MEDS_ADVANCED} medications</span>
+            </div>
+
+            {/* 12h / 24h toggle */}
+            <label className="flex items-center gap-3 cursor-pointer">
+              <button
+                role="switch"
+                aria-checked={hour12}
+                onClick={() => setHour12((v) => !v)}
+                className="relative bg-slate-700 rounded-full h-6 w-10 shadow-inner shrink-0"
+              >
+                <span
+                  className="absolute top-0.5 h-5 w-5 rounded-full shadow transition-all duration-200 ease-out"
+                  style={{
+                    backgroundColor: "#10b981",
+                    left: hour12 ? "2px" : "calc(100% - 22px)",
+                  }}
+                />
+              </button>
+              <span className="text-[12px] text-slate-300">
+                {hour12 ? "12-hour time" : "24-hour time"}
+              </span>
+            </label>
+
+            {/* Dual clock labels toggle */}
+            <label className="flex items-center gap-3 cursor-pointer">
+              <button
+                role="switch"
+                aria-checked={showBothTimes}
+                onClick={() => setShowBothTimes((v) => !v)}
+                className="relative bg-slate-700 rounded-full h-6 w-10 shadow-inner shrink-0"
+              >
+                <span
+                  className="absolute top-0.5 h-5 w-5 rounded-full shadow transition-all duration-200 ease-out"
+                  style={{
+                    backgroundColor: showBothTimes ? "#10b981" : "#475569",
+                    left: showBothTimes ? "calc(100% - 22px)" : "2px",
+                  }}
+                />
+              </button>
+              <span className="text-[12px] text-slate-300">
+                {showBothTimes
+                  ? `Both ${hour12 ? "12h outside / 24h inside" : "24h outside / 12h inside"}`
+                  : `${hour12 ? "12-hour" : "24-hour"} labels only`}
+              </span>
+            </label>
+
+            {/* Show names on wheel */}
+            <label className="flex items-center gap-3 cursor-pointer">
+              <button
+                role="switch"
+                aria-checked={showNamesOnWheel}
+                onClick={() => setShowNamesOnWheel((v) => !v)}
+                className="relative bg-slate-700 rounded-full h-6 w-10 shadow-inner shrink-0"
+              >
+                <span
+                  className="absolute top-0.5 h-5 w-5 rounded-full shadow transition-all duration-200 ease-out"
+                  style={{
+                    backgroundColor: showNamesOnWheel ? "#a78bfa" : "#475569",
+                    left: showNamesOnWheel ? "calc(100% - 22px)" : "2px",
+                  }}
+                />
+              </button>
+              <span className="text-[12px] text-slate-300">Show medication key</span>
+            </label>
+
+            <p className="text-[11px] text-slate-500 leading-relaxed -mt-1">
+              Up to {MAX_MEDS_ADVANCED} medications in Advanced Mode. Each card shows a description field, daily/weekly frequency, preferred morning or evening window, and day-of-week selection for once-weekly drugs like Ozempic.
+            </p>
+          </div>
         )}
 
         {/* Optimize buttons + explanation */}
@@ -1446,7 +1869,8 @@ export default function App() {
             <li>Tap a medication's name to rename it.</li>
             <li>Toggle <span className="text-slate-200">12h / 24h</span> in the top right to change the time format.</li>
             <li>Swipe a medication card to the left to delete it.</li>
-            <li>Tap <span className="text-slate-200">+ Add medication</span> to track another schedule on the same clock.</li>
+            <li>Tap <span className="text-slate-200">+ Add medication</span> to track another schedule on the same clock (up to 5 standard, up to 20 in Advanced Mode).</li>
+            <li>Enable <span className="text-slate-200">Advanced</span> (top right) to unlock more than 5 medications, add a description to each med, set once-weekly frequency (great for Ozempic), choose a Morning/Evening preferred window, and toggle medication names on the wheel.</li>
             <li>Tap <span className="text-slate-200">Optimize ±10%</span> or <span className="text-slate-200">Optimize ±20%</span> to automatically arrange every medication to avoid 11 PM &ndash; 5 AM and share dose times where possible. Higher percent allows more shifting and tighter clustering at the cost of less even spacing.</li>
             <li><span className="text-slate-200">Copy</span> the schedule summary to save or share it. The link at the bottom opens your schedule on any device.</li>
           </ul>
