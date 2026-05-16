@@ -442,7 +442,9 @@ export default function App() {
     return `M ${x1o} ${y1o} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x2o} ${y2o} L ${x2i} ${y2i} A ${rInner} ${rInner} 0 ${largeArc} 0 ${x1i} ${y1i} Z`;
   };
 
-  const svgViewW = size;
+  // When the key is visible, widen the viewBox to include the legend area so it
+  // isn't clipped on iOS (SVG overflow is unreliable on mobile WebKit).
+  const svgViewW = showNamesOnWheel ? size + legendWidth + 14 : size;
 
   const pointerToHours = (clientX, clientY) => {
     const rect = svgRef.current.getBoundingClientRect();
@@ -1389,10 +1391,10 @@ export default function App() {
       />
       <p className="text-xs text-slate-400 mb-4">Drag a dose to shift the schedule</p>
 
-      <div className="mb-4 w-full max-w-[308px] md:max-w-[462px] px-1">
+      <div className={`mb-4 w-full px-1 ${showNamesOnWheel ? "self-start ml-0" : "max-w-[338px] md:max-w-[462px]"}`}>
         <svg
           ref={svgRef}
-          viewBox={`0 0 ${size} ${size}`}
+          viewBox={`0 0 ${svgViewW} ${size}`}
           className="touch-none w-full h-auto"
           style={{ overflow: "visible" }}
           onMouseDown={handleBgTap}
